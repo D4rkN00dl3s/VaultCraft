@@ -173,5 +173,11 @@ implementation rather than a fork.
   `TriColliderTest`. There is no C++ test target.
 - Everything else is checked against the running game. Use `tools/`: `dump_collision.py`,
   `probe_feet.py`, `tick_monitor.py` and `trace_motion.py` read the live shared mapping
-  read-only and are safe to run while the game is up. `dump_collision.py` is the quickest way to
-  confirm the game side is actually streaming terrain.
+  - `tools/check_link.py` is the phase 0 check: does the mapping exist, and is the game heartbeating.
+
+  **Only run the four probes while the game is actually running.** They were ported from
+  SkyCraft unchanged and still use Python's `mmap(tagname=...)`, which calls `CreateFileMapping`
+  and therefore *creates* the mapping when it is absent. Run one standalone and it manufactures a
+  wrongly-sized stub under the real name; if it is still running when the game starts, the game's
+  `CreateFileMapping` succeeds against that stub and its `MapViewOfFile` then fails on the ~113 MB
+  it asked for. `check_link.py` deliberately uses `OpenFileMappingW` instead, which only opens.
