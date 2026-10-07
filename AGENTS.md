@@ -372,9 +372,15 @@ implementation rather than a fork.
   has to be running: the game checks for a client at startup, and `nvse_steam_loader.dll` only
   satisfies the handshake, not the check.
 
-  It waits for the window handle and then for the menu to settle before sending keys, because the
-  window exists long before it accepts input and early keys are silently ignored — which looks
-  exactly like a broken script. `SendKeys` goes to the *focused* window, so focus is forced first.
+  Synthetic key input reaches the game through the keyboard state, so the game only sees it while
+  its window is genuinely foreground. `AppActivate` from a background process often fails at that,
+  silently, and the keys go to whatever does have focus — which is how the first version of this
+  script launched the game and then did nothing to it. The script attaches to the foreground thread's
+  input queue to force foreground properly, presses ESC a few times to skip the opening load, and
+  then **verifies**: it watches `VaultCraft.log` for `save loaded` and retries the keys up to three
+  times. "Did the keys land" is otherwise a guess, and it has already been wrong once.
+
+  `-NoKeys` launches without pressing anything; `-NoVerify` presses without the retry loop.
 
   **Only run the four probes while the game is actually running.** They were ported from
   SkyCraft unchanged and still use Python's `mmap(tagname=...)`, which calls `CreateFileMapping`
