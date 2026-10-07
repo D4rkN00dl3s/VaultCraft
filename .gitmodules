@@ -1,0 +1,3 @@
+[submodule "nvse/extern/NVSE"]
+	path = nvse/extern/NVSE
+	url = https://github.com/xNVSE/NVSE.git

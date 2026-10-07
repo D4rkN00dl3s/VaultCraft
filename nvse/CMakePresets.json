@@ -1,0 +1,18 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "default",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "Win32",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "VAULTCRAFT_DEPLOY_DIR": "C:/Program Files (x86)/Steam/steamapps/common/Fallout New Vegas"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "default", "configuration": "RelWithDebInfo" },
+    { "name": "debug", "configurePreset": "default", "configuration": "Debug" }
+  ]
+}
