@@ -96,6 +96,65 @@ namespace
 		}
 	}
 
+	// Hex alone cannot tell a vertex buffer from an index buffer: both are arrays of integers. The
+	// floats are what identify the format, so print both and let the values settle it.
+	void DumpAsFloats(const char* a_label, const std::uintptr_t a_p, const int a_count)
+	{
+		if (!CanRead(a_p, static_cast<std::size_t>(a_count) * sizeof(std::uint32_t))) {
+			log::Info("      %s -> %08X (not readable)", a_label, static_cast<unsigned long>(a_p));
+			return;
+		}
+		const auto* w = reinterpret_cast<const std::uint32_t*>(a_p);
+		for (int i = 0; i < a_count; ++i) {
+			float f = 0.0f;
+			std::memcpy(&f, &w[i], sizeof(f));
+			log::Info("      %s +%02X = %08X  %12.4f", a_label, i * 4,
+				static_cast<unsigned long>(w[i]), static_cast<double>(f));
+		}
+	}
+
+	// Follows whatever a shape's geometry pointer lands on, whether or not we can name it, and
+	// dumps the two arrays. The data class the shape actually points at measured as vtable
+	// 0x010C755C, which is not the 0x010C740C the factory extraction produced for
+	// hkPackedNiTriStripsData - so naming it first would have blocked the one dump that matters.
+	void DumpDataObject(const char* a_label, const std::uintptr_t a_p)
+	{
+		if (!CanRead(a_p, 0x30)) {
+			log::Info("      %s -> %08X (unreadable)", a_label, static_cast<unsigned long>(a_p));
+			return;
+		}
+		const auto* d = reinterpret_cast<const std::uint32_t*>(a_p);
+		const int cls = Lookup(d[0]);
+		log::Info("      %s -> %08X  vtable %08X%s", a_label, static_cast<unsigned long>(a_p), d[0],
+			cls >= 0 ? ("   <- " + std::string(addr::kHavokShapeClasses[cls].name)).c_str() : "");
+
+		if (d[0] == addr::kTriStripsDataWrapperVtable) {
+			// The 0xB0-byte wrapper: geometry is in its cached copies at +0x94 and +0x98, and the
+			// source object it copied them from is at +0x84. Dumping only the 0x30-byte source's
+			// +0x14/+0x18 was the earlier plan and it read the wrapper's middle, which is defaults.
+			// The caller's 0x30 check does not cover +0xA0, so check the real extent here.
+			if (!CanRead(a_p, 0xB0)) {
+				log::Info("      %s wrapper truncated at %08X", a_label, static_cast<unsigned long>(a_p));
+				return;
+			}
+			log::Info("      %s wrapper: src@+84=%08X  count@+A0=%u", a_label, d[0x84 / 4], d[0xA0 / 4]);
+			DumpAsFloats("wrap+94", a_p + 0x94, 10);
+			DumpAsFloats("wrap+98", a_p + 0x98, 10);
+			const std::uint32_t src = d[0x84 / 4];
+			if (CanRead(src, 0x30)) {
+				log::Info("      %s source -> %08X vtable %08X", a_label, src,
+					*reinterpret_cast<const std::uint32_t*>(src));
+				DumpAsFloats("src+14", src + 0x14, 10);
+				DumpAsFloats("src+18", src + 0x18, 10);
+			}
+			return;
+		}
+
+		log::Info("      %s counts +08=%u  +0C=%u  +10=%u", a_label, d[2], d[3], d[4]);
+		DumpAsFloats("+14", a_p + 0x14, 10);
+		DumpAsFloats("+18", a_p + 0x18, 10);
+	}
+
 	// The classes worth dumping, in the order worth dumping them. A global dump budget is useless
 	// here: the scan walks memory in address order, so whichever class happens to sit lowest wins
 	// all of it and the terrain classes - the entire point - get nothing.
@@ -185,12 +244,19 @@ int ScanForHavokObjects()
 					static_cast<unsigned long>(obj));
 				DumpWords("self", obj, 12);
 
-				// A bhkShape is 0x14 bytes whose last two fields are the geometry pointers. Following
-				// them is the whole question: if either lands on an hkPackedNiTriStripsData then the
-				// triangle data is reachable, and there is no need to reach the physics world at all.
+				// The geometry pointer on a bhkPackedNiTriStripsShape is at +0x08, not at one of the fields the
+				// factory zeroes. Read off a live object: the MOPP shapes embed a tri-strips shape at
+				// +0x14, and its +0x04/+0x08/+0x0C/+0x10 line up with the standalone shapes'
+				// 1 / pointer / 0 / 0. The constructor only told us which fields start at zero, which
+				// is not the same as which one holds the data.
 				if (std::strcmp(addr::kHavokShapeClasses[idx].name, "bhkPackedNiTriStripsShape") == 0) {
-					DumpWords("+0C", obj + 0x0C, 1);
-					DumpWords("+10", obj + 0x10, 1);
+					DumpDataObject("shape+08", reinterpret_cast<const std::uint32_t*>(obj)[2]);
+				} else if (std::strcmp(addr::kHavokShapeClasses[idx].name,
+				                        "hkPackedNiTriStripsData") == 0) {
+					// Also dump the data objects on their own. Going through a shape depends on the
+					// shape's geometry pointer being at +0x08, which was measured rather than known;
+					// these are found directly and need no such assumption.
+					DumpDataObject("data", obj);
 				}
 			}
 		}

@@ -28,6 +28,16 @@ namespace vaultcraft::addr
 	// about a second.
 	constexpr std::uintptr_t kVtableLo = 0x01010000u;
 	constexpr std::uintptr_t kVtableHi = 0x010CA800u;
+
+	// The object a bhkPackedNiTriStripsShape points at from +0x08, and the one that actually holds
+	// the geometry. Deliberately not in kHavokShapeClasses: its factory FUN_00ca5870 references no
+	// class-name string, so there is no name to recover for it the way the other 35 were, and
+	// inventing one would be worse than saying so.
+	//
+	// Constructor FUN_00ca39f0, factory FUN_00ca5870, size 0xB0. It has a second vtable at +0x10
+	// (multiple inheritance), keeps a refcounted source object at +0x84, and caches copies of that
+	// source's fields at +0x90..+0xA0 - which are where the vertex and index arrays sit.
+	constexpr std::uint32_t kTriStripsDataWrapperVtable = 0x010C755Cu;
 }
 
 namespace vaultcraft::engine

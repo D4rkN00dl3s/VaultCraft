@@ -260,7 +260,35 @@ identifies every class at once. Skip `MEM_IMAGE` — the vtables themselves live
 everything — and range-check each dword against the vtable span before looking it up, which is what
 keeps a full pass over the heap at a few hundred ms.
 
-**Two traps this cost a run each:**
+**The full object chain is confirmed at runtime**, which is what phase 1 existed to establish:
+
+```
+bhkMoppBvTreeShape (502/cell)  and  bhkPackedNiTriStripsShape (501/cell)
+  +0x08 -> a 0xB0-byte wrapper, vtable 0x010C755C
+            +0x84  -> hkPackedNiTriStripsData, 0x30 bytes, vtable 0x010C740C
+            +0x90..+0xA0  cached copies of that source's fields
+```
+
+The wrapper has a **second vtable at `+0x10`** (multiple inheritance) and is constructed by
+`FUN_00ca39f0` from factory `FUN_00ca5870`. Its factory references no class-name string, so the class
+has no recoverable name — it is tracked by vtable as `kTriStripsDataWrapperVtable` rather than given
+an invented one.
+
+**Bounds are at `+0x60`–`+0x7C`** on the wrapper: eight floats, read out as min/max by
+`FUN_00ca37e0`, which is the shape's AABB accessor. That is enough for coarse culling without
+touching vertex data.
+
+**What is still unknown is the vertex encoding.** The arrays read as bit-packed fields
+(`7BFF841F`, `AAAAAAAA`, `000690D6`), not coordinates — so they are not plain floats and cannot be
+read by dumping. Decoding them means reading the code that interprets them, which is the project-
+ending risk the plan flagged. **The phase 1 decision point is now live:** either commit to decoding
+Havok's packed format, or take the ray-casting fallback.
+
+Note that the fallback is cheaper than the plan assumed, because shapes are found by scanning and do
+not need the physics world: 1,003 of them per cell, each with a known vtable and a known AABB. What a
+ray-cast fallback still needs is a callable ray-cast entry point on these shapes.
+
+**Four traps this cost a run each:**
 
 - **Timing.** Terrain collision is built *during* cell load. A scan fired on `kMessage_PostLoadGame`
   ran in the same millisecond as the message and found nothing. Scanning 5 s later, four times, found
