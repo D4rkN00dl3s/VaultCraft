@@ -54,7 +54,9 @@ namespace vaultcraft
 			return true;
 		}
 
-		// ~113 MB: 32 MB collision ring, 96 MB of overlay triple buffer, 64 MB render ring.
+		// 191 MB: 32 MB collision ring, 96 MB of overlay triple buffer, 64 MB render ring.
+		// CreateFileMapping takes the size as two DWORDs, so the high half is not optional on a
+		// 32-bit build even though this particular total fits comfortably in the low half.
 		const auto size = proto::kMappingBytes;
 
 		PSECURITY_DESCRIPTOR       descriptor = SharedWithThisUser();
@@ -91,8 +93,11 @@ namespace vaultcraft
 		header->skyrimHeartbeatMs = ::GetTickCount64();
 		header->magic = proto::kMagic;
 
-		log::Info("shared memory %ls (%llu MB, %ls)", proto::kMappingName,
-			static_cast<unsigned long long>(size >> 20), existed ? "reused" : "created");
+		// The logger is narrow-only, on purpose. Passing a wchar_t* to a %s, or a char* to a %ls, makes the
+// CRT's printf argument validation fire: it raises a fast-fail (0xc0000409) inside ucrtbase.dll and
+// takes the whole game down with it. Narrow wide strings at the call site instead.
+log::Info("shared memory %s (%llu MB, %s)", log::Narrow(proto::kMappingName).c_str(),
+		 static_cast<unsigned long long>(size >> 20), existed ? "reused" : "created");
 		return true;
 	}
 

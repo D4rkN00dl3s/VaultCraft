@@ -103,6 +103,35 @@ plugin builds cleanly and then fails to load with no useful diagnostic.
 `IErrors.cpp`. Dragging NVSE's common library in to write a log line was not worth it, so we have
 about forty lines of our own that also mirror to `OutputDebugString` for DebugView.
 
+**Two ways this file used to crash the game.** Both are worth knowing, because neither names its
+cause and both produced a fault inside `ucrtbase.dll`:
+
+- **`_wfopen_s` mode must be plain `"w"`.** Any `ccsb=` token — `UTF-8`, `65001`, or a bare number
+  — is rejected by this UCRT's parameter validation, which raises the invalid-parameter handler and
+  `__fastfail`s with `0xc0000409`. Measured on Windows 10.0.26100: `w` and `wb` work, every
+  `ccsb` variant kills the process. Because opening the file is the first thing *every* log line
+  does, the symptom is a crash with **no log file at all** — the one thing that would have told you.
+- **The logger is narrow-only.** Passing a `wchar_t*` to `%s`, or a `const char*` to `%ls`, makes
+  the same argument validation fire the same way. Narrow wide strings with `log::Narrow()` at the
+  call site rather than reaching for `%ls`.
+
+A bad format string in a plugin is not a logged error, it is a dead game, so treat the two as
+hazards rather than style issues.
+
+### Debugging a plugin crash without launching the game
+
+`vclink_test` (CMake target `vclink_test`) runs the link and logging code in a console:
+
+```bat
+cmake --build --preset release --target vclink_test
+build\RelWithDebInfo\vclink_test.exe
+```
+
+It creates the mapping, heartbeats, and prints what it saw, exiting 0 on success. Every fault in
+`Link` and `Log` so far has reproduced here immediately, where a crash inside Fallout: New Vegas
+takes minutes and gives you only an event-log entry. Both of the bugs above were found by making
+the game crash first and the harness print it second.
+
 ## Changing the protocol
 
 `protocol/skycraft_protocol.h` is hand-mirrored in `fabric/src/main/java/dev/skycraft/link/Proto.java`.
@@ -191,5 +220,5 @@ implementation rather than a fork.
   SkyCraft unchanged and still use Python's `mmap(tagname=...)`, which calls `CreateFileMapping`
   and therefore *creates* the mapping when it is absent. Run one standalone and it manufactures a
   wrongly-sized stub under the real name; if it is still running when the game starts, the game's
-  `CreateFileMapping` succeeds against that stub and its `MapViewOfFile` then fails on the ~113 MB
+  `CreateFileMapping` succeeds against that stub and its `MapViewOfFile` then fails on the 191 MB
   it asked for. `check_link.py` deliberately uses `OpenFileMappingW` instead, which only opens.

@@ -26,7 +26,13 @@ namespace vaultcraft::log
 					if (const auto slash = path.find_last_of(L'\\'); slash != std::wstring::npos) {
 						path.resize(slash + 1);
 						path += L"VaultCraft.log";
-						_wfopen_s(&g_file, path.c_str(), L"w, ccsb=UTF-8");
+						// Plain "w", deliberately. Any ccsb= token in the mode string - whether
+						// UTF-8, 65001 or a bare number - is rejected by this UCRT's parameter
+						// validation, which raises the invalid-parameter handler and __fastfail's
+						// with 0xC0000409 inside ucrtbase.dll. Measured on 10.0.26100: "w" and "wb"
+						// work; "w, ccsb=UTF-8" kills the process with no output and no log file,
+						// because opening the file is the first thing every log line does.
+						_wfopen_s(&g_file, path.c_str(), L"w");
 					}
 				}
 			}
@@ -42,6 +48,20 @@ namespace vaultcraft::log
 			::OutputDebugStringA(line);
 		}
 	} // namespace
+
+	std::string Narrow(const wchar_t* a_wide)
+	{
+		if (!a_wide || !*a_wide) {
+			return {};
+		}
+		const int needed = ::WideCharToMultiByte(CP_UTF8, 0, a_wide, -1, nullptr, 0, nullptr, nullptr);
+		if (needed <= 1) {
+			return {};
+		}
+		std::string out(static_cast<std::size_t>(needed - 1), '\0');
+		::WideCharToMultiByte(CP_UTF8, 0, a_wide, -1, out.data(), needed, nullptr, nullptr);
+		return out;
+	}
 
 	void Init()
 	{

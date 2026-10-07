@@ -9,7 +9,7 @@ Note that this deliberately does *not* use Python's mmap(tagname=...). That call
 which **creates** the mapping when it does not already exist, so a naive check would manufacture an
 undersized placeholder with the right name and then report nonsense. Worse, if such a script were
 still running when the game started, the game's CreateFileMapping would find that stub, succeed with
-ERROR_ALREADY_EXISTS, and then fail to map the ~113 MB it asked for. OpenFileMappingW only ever
+ERROR_ALREADY_EXISTS, and then fail to map the 191 MB it asked for. OpenFileMappingW only ever
 opens, never creates.
 """
 

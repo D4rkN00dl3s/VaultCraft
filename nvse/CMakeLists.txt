@@ -90,6 +90,24 @@ if(MSVC)
     target_link_options(VaultCraft PRIVATE /DEBUG:FULL)
 endif()
 
+# Standalone harness for the link and logging code. Faults in a plugin otherwise only show up as a
+# crashed game, which makes them slow and miserable to diagnose; this runs the same code in a
+# console in seconds. Excluded from the DLL, which is why it lives outside src/.
+add_executable(vclink_test EXCLUDE_FROM_ALL
+    test/vc_link_test.cpp
+    src/Link.cpp
+    src/Log.cpp)
+target_include_directories(vclink_test PRIVATE
+    src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../protocol
+    ${NVSE_ROOT}/nvse ${NVSE_ROOT} ${NVSE_DIR})
+target_compile_definitions(vclink_test PRIVATE RUNTIME=1 _CRT_SECURE_NO_WARNINGS WIN32 _WINDOWS _USRDLL)
+target_precompile_headers(vclink_test PRIVATE src/PCH.h)
+if(MSVC)
+    target_compile_options(vclink_test PRIVATE /W4 /permissive- /Zc:preprocessor /utf-8)
+    target_link_options(vclink_test PRIVATE /DEBUG:FULL)
+endif()
+
 # Development convenience: copy the built plugin where xNVSE will actually find it.
 #
 # The game root is NOT where plugins go. That folder holds xNVSE's own core DLLs, which its loader

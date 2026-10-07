@@ -71,6 +71,7 @@ extern "C" __declspec(dllexport) bool NVSEPlugin_Load(NVSEInterface* a_nvse)
 		vaultcraft::log::Error("could not create the shared mapping; VaultCraft is inert until the game restarts");
 	}
 
-	vaultcraft::log::Info("loaded (pid %lu, shared memory %ls)", ::GetCurrentProcessId(), vaultcraft::proto::kMappingName);
+	vaultcraft::log::Info("loaded (pid %lu, shared memory %s)", ::GetCurrentProcessId(),
+		vaultcraft::log::Narrow(vaultcraft::proto::kMappingName).c_str());
 	return true;
 }
