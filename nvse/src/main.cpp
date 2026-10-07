@@ -62,7 +62,12 @@ extern "C" __declspec(dllexport) bool NVSEPlugin_Load(NVSEInterface* a_nvse)
 		vaultcraft::log::Error("no messaging interface; VaultCraft cannot track the game loop");
 		return false;
 	}
-	messaging->RegisterListener(g_pluginHandle, "VaultCraft", OnMessage);
+	// The sender must be "NVSE", not our own name. Dispatch_Message walks s_pluginListeners[sender],
+	// and every message NVSE raises is dispatched with sender == 0; LookupHandleFromName maps "NVSE"
+	// to handle 0, which is the only slot that ever gets walked. Registering under "VaultCraft"
+	// files the listener in our own slot, where nothing dispatches to, so the plugin loads, logs
+	// nothing further, and silently never hears from the game again.
+	messaging->RegisterListener(g_pluginHandle, "NVSE", OnMessage);
 
 	if (!vaultcraft::Link::Get().Create()) {
 		// Report success anyway. Failing here makes xNVSE unload us, and an unavailable mapping is

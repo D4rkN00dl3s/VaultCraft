@@ -118,7 +118,10 @@ endif()
 # Pointing at the game root alone produces a DLL that builds, deploys, and is then silently ignored,
 # with no log file to explain why.
 #
-# A failed copy is a warning, not a build error: a running game holds the DLL.
+# A running game holds the DLL, and this copy fails hard when it does: MSBuild reports MSB3073 and
+# the build step fails. The plugin itself is still built correctly in bin/, so close the game before
+# rebuilding if you want the deploy to happen. Fixing that would mean routing through a cmake -P
+# script to swallow the failure, which seemed worse than an honest error that names its cause.
 set(VAULTCRAFT_DEPLOY_DIR "" CACHE PATH "Fallout: New Vegas folder (the one holding FalloutNV.exe)")
 if(VAULTCRAFT_DEPLOY_DIR AND EXISTS "${VAULTCRAFT_DEPLOY_DIR}")
     set(VAULTCRAFT_PLUGIN_DIR "${VAULTCRAFT_DEPLOY_DIR}/Data/NVSE/Plugins")

@@ -36,6 +36,10 @@ cmake --preset default
 cmake --build --preset release
 ```
 
+The real Minecraft side runs under Prism Launcher, not the vanilla launcher: the Fabric instance is
+`C:\Users\mart\AppData\Roaming\PrismLauncher\instances\26.3\minecraft`. `runClient` is still the
+fast loop for the mod alone; the Prism instance is what pairs with a running game.
+
 Pass `--no-configuration-cache` to every `gradlew` call, the way `tools/` scripts do, even though
 `gradle.properties` enables the cache.
 
@@ -54,8 +58,25 @@ for (IDirectoryIterator iter(m_pluginDirectory.c_str(), "*.dll"); ...)  // :688
 A plugin dropped in the game root is silently ignored: it builds, deploys, never loads, and writes
 no log to explain why. That is the shape of the failure, so it is worth recognising.
 
+`RegisterListener` takes a **sender**, and the sender must be `"NVSE"`:
+
+```cpp
+PluginManager::Dispatch_Message(0, NVSEMessagingInterface::kMessage_MainGameLoop, ...);
+// ...which walks:
+for (auto iter = s_pluginListeners[sender].begin(); ...)   // sender == 0
+```
+
+`LookupHandleFromName` maps `"NVSE"` to handle 0, and slot 0 is the only one anything dispatches
+into. Registering under our own plugin name files the listener in our own slot, where nothing ever
+reaches it: the plugin loads, logs its startup lines, and then goes deaf. The plugin looks healthy
+and receives nothing.
+
+`kMessage_MainGameLoop` is the per-frame tick, dispatched from `HandleMainLoopHook`, which NVSE
+patches at `0x0086B386`. That is where the heartbeat belongs.
+
 The plugin writes `VaultCraft.log` to the **game root**, not to `Data\NVSE\Plugins`, so it sits
-alongside `FalloutNV.exe` where the rest of the game's logs are.
+alongside `FalloutNV.exe`. It opens with `_wfsopen(..., _SH_DENYWR)` rather than `fopen`, because
+`fopen` takes exclusive access and nothing could read the log until the game exited.
 
 The build is `Win32`, not `x64`, and `CMakeLists.txt` fails configuration if you get it wrong.
 Fallout: New Vegas is a 32-bit game; a 64-bit plugin cannot load into it.

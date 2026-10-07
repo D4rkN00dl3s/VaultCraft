@@ -1,6 +1,8 @@
 #include "Log.h"
 #include "PCH.h"
 
+#include <share.h>
+
 namespace vaultcraft::log
 {
 	namespace
@@ -32,7 +34,11 @@ namespace vaultcraft::log
 						// with 0xC0000409 inside ucrtbase.dll. Measured on 10.0.26100: "w" and "wb"
 						// work; "w, ccsb=UTF-8" kills the process with no output and no log file,
 						// because opening the file is the first thing every log line does.
-						_wfopen_s(&g_file, path.c_str(), L"w");
+						// Plain _wfopen_s/fopen takes exclusive access, so nothing can read the log until the game exits -
+					// which is exactly when you least want to be tailing it. _fsopen with _SH_DENYWR
+					// allows other processes to read while denying other writers, which is what a log
+					// wants. _fsopen returns the stream directly.
+					g_file = _wfsopen(path.c_str(), L"a", _SH_DENYWR);
 					}
 				}
 			}
