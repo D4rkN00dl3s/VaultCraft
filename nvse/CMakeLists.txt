@@ -20,7 +20,8 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 # Gamebryo renders with Direct3D 9, not 11. There is no CommonLib equivalent for Fallout: New
 # Vegas, so the engine types come from the NVSE headers in extern/ and everything engine-specific
 # goes through src/Port.h.
-set(NVSE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/NVSE/nvse/nvse")
+set(NVSE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/extern/NVSE")
+set(NVSE_DIR "${NVSE_ROOT}/nvse/nvse")
 
 file(GLOB_RECURSE VAULTCRAFT_SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.h)
 
@@ -36,6 +37,12 @@ set_target_properties(VaultCraft PROPERTIES
 target_include_directories(VaultCraft PRIVATE
     src
     ${CMAKE_CURRENT_SOURCE_DIR}/../protocol
+    # NVSE's own sources spell their includes three different ways, so all three roots are needed:
+    #   nvse/PluginAPI.h   -> extern/NVSE/nvse
+    #   common/IDebugLog.h -> extern/NVSE
+    #   GameObjects.h      -> extern/NVSE/nvse/nvse
+    ${NVSE_ROOT}/nvse
+    ${NVSE_ROOT}
     ${NVSE_DIR})
 
 target_precompile_headers(VaultCraft PRIVATE src/PCH.h)
@@ -53,9 +60,30 @@ target_link_libraries(VaultCraft PRIVATE
     winmm.lib)
 
 target_compile_definitions(VaultCraft PRIVATE
-    NOMINMAX
-    WIN32_LEAN_AND_MEAN
-    _CRT_SECURE_NO_WARNINGS)
+    # NOMINMAX must NOT be set here either. xNVSE's headers call bare min()/max(), which only
+    # resolve because windows.h defines them as macros. NOMINMAX removes both and the build dies on
+    # 'max': identifier not found. xNVSE's own project does not define it either.
+    #
+    # The consequence for our own code: those macros will expand inside any std::min or std::max
+    # call, so write them as (std::min)(a, b) if one is ever needed.
+    _CRT_SECURE_NO_WARNINGS
+    # WIN32_LEAN_AND_MEAN must NOT be set here. It stops windows.h including rpc.h, which is the
+    # only route to rpcndr.h's `typedef unsigned char byte`, and NVSE's headers use a bare `byte`
+    # 36 times without declaring it themselves. Without the macro the build dies on unknown type
+    # "byte", and the resulting parse errors cascade into dozens of bogus "static assertion failed"
+    # failures about struct sizes that have nothing wrong with them. xNVSE's own project does not
+    # define it either.
+    WIN32
+    _WINDOWS
+    _USRDLL
+    # xNVSE gates its script-function interface on RUNTIME, which it tests both as `#ifdef RUNTIME`
+    # and `#if RUNTIME`, so defining it as 1 satisfies both.
+    #
+    # EDITOR must be left *undefined*, not defined as 0. Their headers also use `#ifdef EDITOR`,
+    # which is satisfied by a 0 just as happily as by a 1, so `EDITOR=0` silently compiles the
+    # GECK-only EditorData member into the runtime layout and every BaseFormComponent descendant
+    # comes out 0x10 bytes too large.
+    RUNTIME=1)
 
 if(MSVC)
     target_compile_options(VaultCraft PRIVATE /W4 /permissive- /Zc:preprocessor /utf-8 /MP /wd4200)

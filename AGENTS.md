@@ -51,6 +51,46 @@ Fallout: New Vegas is a 32-bit game; a 64-bit plugin cannot load into it.
 `nvse/src/*.cpp` is globbed with `CONFIGURE_DEPENDS`, so new files are picked up without
 re-running configure.
 
+### Three macros that will bite you
+
+xNVSE's headers are old and assume a very specific preprocessor environment. `CMakeLists.txt`
+comments each one, but the failure modes are so indirect they are worth restating. All three were
+found the hard way, and **none produces an error that names its cause.**
+
+| Do not define | Because | Symptom if you do |
+|---|---|---|
+| `WIN32_LEAN_AND_MEAN` | it stops `windows.h` including `rpc.h`, the only route to `rpcndr.h`'s `typedef unsigned char byte`. Their headers use a bare `byte` 36 times and never declare it. | `unknown type "byte"`, then dozens of **bogus** `static assertion failed` errors about struct sizes that are actually fine |
+| `NOMINMAX` | their headers call bare `min()`/`max()`, which only resolve because `windows.h` defines them as macros | `'max': identifier not found` |
+| `EDITOR` **at all** | not even `EDITOR=0`. They use `#ifdef EDITOR` alongside `#if RUNTIME`, so `EDITOR=0` still satisfies the `#ifdef` and compiles the GECK-only `EditorData` member into the runtime layout | every `BaseFormComponent` descendant comes out exactly **0x10 bytes too large**: `TESForm` 0x28 not 0x18, `BGSTextureSet` 0xB0 not 0xA0, and so on |
+
+That last one produces a wall of misleading errors, because a wrong base-class size breaks every
+derived class's `static_assert`. **If struct sizes start failing, suspect the macros before
+suspecting the structs.**
+
+Because `min`/`max` are live macros, write any `std::min` or `std::max` in our own code as
+`(std::min)(a, b)`.
+
+### Include order, and exports
+
+`src/PCH.h` includes `nvse/prefix.h` and uses theirs rather than hand-rolling one: it is the root
+of NVSE's include graph, supplying the primitive types, `winsock2` before `Windows.h`, and the
+`UnorderedMap` alias that `CommandTable.h` needs without including it. The standard library goes
+*between* the prefix and `PluginAPI.h`, because `PluginAPI.h` reaches `CommandTable.h`, which
+uses `std::string` and `std::vector` itself. Get that order wrong and the parse collapses into the
+same misleading struct-size errors.
+
+`extern "C"` alone does **not** export from a DLL. Both entry points need
+`__declspec(dllexport)`: `PluginManager.cpp` finds them with `GetProcAddress`, and
+`PluginChecker.cpp` probes for `NVSEPlugin_Query` to decide what a DLL even is. Without it the
+plugin builds cleanly and then fails to load with no useful diagnostic.
+
+### Logging
+
+`src/Log.cpp` is ours, not NVSE's `IDebugLog`. That header looks header-only but is not: it needs
+`common/IDebugLog.cpp`, which needs `IFileStream.cpp`, which needs `IDataStream.cpp` and
+`IErrors.cpp`. Dragging NVSE's common library in to write a log line was not worth it, so we have
+about forty lines of our own that also mirror to `OutputDebugString` for DebugView.
+
 ## Changing the protocol
 
 `protocol/skycraft_protocol.h` is hand-mirrored in `fabric/src/main/java/dev/skycraft/link/Proto.java`.
