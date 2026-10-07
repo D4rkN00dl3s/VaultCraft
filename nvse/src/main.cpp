@@ -1,9 +1,15 @@
 #include "PCH.h"
+#include "Engine.h"
 #include "Link.h"
 #include "Log.h"
 
 static PluginHandle   g_pluginHandle = kPluginHandle_Invalid;
 static NVSEInterface* g_nvse = nullptr;
+
+// Phase 1 spike, throwaway: run the terrain-shape scan once, on the first save load. Terrain
+// collision only exists once a cell is in memory, so save load is the earliest point where there is
+// anything to find, and once is enough - this blocks for a second or two and is not coming back.
+static bool g_spiked = false;
 
 namespace
 {
@@ -21,6 +27,10 @@ namespace
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoadGame:
 			vaultcraft::log::Info("save loaded");
+			if (!g_spiked) {
+				g_spiked = true;
+				vaultcraft::engine::ScanForTerrainShapes();
+			}
 			break;
 		case NVSEMessagingInterface::kMessage_ExitGame:
 			vaultcraft::log::Info("leaving the game");

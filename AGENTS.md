@@ -199,9 +199,62 @@ object model in the binary — it registers every shape class by name with its f
 collision is `bhkNiTriStripsShape` (factory `FUN_00ca6670`) and/or `bhkMoppBvTreeShape`. Referencing
 an RTTI name string gets you the data table, not code; go through the factory.
 
-Havok's offset fields read as 32-bit in this build. Evidence, not proof: BSHavok's registration
-and dispatch code is uniformly `undefined4 *` with 32-bit vtable calls. If a shape walk ever
-produces impossible addresses, re-examine whether the field is 64-bit before assuming a logic bug.
+**Havok's offset fields read as 32-bit in this build.** Settled, not merely argued: Havok object
+sizes come out of the factory constructors and none exceeds 32 bits of meaningful extent, and every
+BSHavok dispatch we have read is `undefined4 *` with 32-bit vtable calls. No 64-bit pointer traffic
+anywhere in the range `0x00b00000`–`0x00e00000`, which holds 9,529 of the exe's 63,261 functions.
+
+### The Havok spike, as far as it got
+
+The binary has no symbols and BSHavok is undecorated, so methods are all `FUN_xxxxxx` and there is
+nothing to grep for. Identification works two ways: BSHavok's own source paths and assert strings are
+linked in, and each class's factory is reachable from `FUN_00c68230`.
+
+**583 class names recovered** from `.rdata`, spanning the whole engine — `bhkWorld`, `hkpPhysicsSystem`,
+`bhkCharacterProxy`, `hkpTriSampledHeightFieldBvTreeShape`, `hkPackedNiTriStripsData`, and so on. FNV
+drives its player with a Havok **character proxy**, which is worth knowing for the phase 2 puppet.
+
+**`bhkNiTriStripsShape` is decoded.** Its factory `FUN_00ca6670` allocates `0x14` bytes, stores the
+vtable pointer `0x010C771C` at offset 0, and zeroes `0x0C` and `0x10`:
+
+```cpp
+constexpr std::uintptr_t kBhkNiTriStripsShapeVtable = 0x010C771C;   // Engine.h
+constexpr std::size_t      kBhkNiTriStripsShapeSize   = 0x14;
+```
+
+So size and vtable are *read out of the constructor*, not inferred. The vtable is mostly `purecall`
+stubs at `+0x0C`–`+0x44`, with real methods at `+0x00` (destructor), `+0x04`, `+0x72` (`FUN_00ca6990`,
+a clone) and `+0x7C` (`FUN_00ca7a70`, reads the shape from a file stream). `0x0C` and `0x10` are
+the two data pointers; what they point at is the open question.
+
+**A physics-system object is partly mapped.** `FUN_00cd24d0(this, world)` stores the world at
+`this + 0x04`, and `FUN_00cd2530(this, world)` appends it to the array at `this + 0x6C` (count
+`+0x70`, capacity `+0x74`). Also present: four listener arrays at `+0x5C`–`+0x68`, another at
+`+0x84`/`+0x88`, and a world-context array at `+0x78`/`+0x7C` with a stride of **`0xF0`** — that
+stride is `sizeof(hkpWorldContext)`, and the `hkpWorldCinfo` string is referenced from the same
+function.
+
+**Two dead ends, so nobody walks them again:**
+
+- Every Havok class-name string is also referenced from `.text` at `0x00fb0000`–`0x00fc1000`. Those
+  look like a static class-registry table and are not: they are `push <name>` type-mismatch report
+  thunks. Their *callers* would be the class's methods, but `bhkWorld`'s thunk at `0x00fbcb00` has
+  no callers at all, so nothing in FNV does a checked cast to `bhkWorld`. The thunks do sit in an
+  ordered `.rdata` array at `0x01010500`, `0x20` bytes apart.
+- `FUN_00c85750` is called with no arguments and its result dereferenced, which looks exactly like a
+  singleton accessor. It is `TlsGetValue(DAT_01268108)`. It is called from half of BSHavok, so it is
+  an easy false positive to re-find.
+
+**Tooling lives in WSL**, `/home/mart/ghidra.sh <Script.java> [args]` plus
+`/home/mart/ghidrascripts/`. It runs `analyzeHeadless` against the persistent project
+`~/ghidra-proj/fnv` with `-noanalysis -readOnly`, so a script run costs seconds rather than the 743 s
+a full analysis does. Three general-purpose scripts are there and are worth reusing rather than
+rewriting: `CallersUp` (caller graph from a seed, N levels deep), `XrefTo` (what points at a raw
+address — Ghidra does not always create a `Function` at real code addresses, so `CallersUp` cannot
+start there), and `DumpWindow` (a memory range as annotated dwords).
+
+Note the `sed` in `ghidra.sh`: Ghidra prefixes *our* output too, so the prefix has to be stripped
+before `/^INFO /d`, or the script deletes its own results.
 
 **Rendering is Direct3D 9**, not 11 (`D3D9.DLL`, `D3DX9_38.DLL` in the imports). Input arrives
 through DirectInput 8, and xNVSE already exposes raw versus post-filter state plus a key-disable
