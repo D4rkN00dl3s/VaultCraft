@@ -47,6 +47,14 @@ load into a 32-bit game.
 See [AGENTS.md](AGENTS.md) for the build details that are easy to get wrong — chiefly that the
 game's own executable cannot be reverse engineered off disk, and what to do about that.
 
+## Credits
+
+VaultCraft is a port of [SkyCraft](https://github.com/chasmlol/SkyCraft) by **chasmlol**, which
+does the same thing for Skyrim. The Minecraft mod and the shared-memory protocol are his work,
+carried over under the MIT licence, credited in [CREDITS.md](CREDITS.md), with the licence text
+preserved in [LICENSE.skycraft](LICENSE.skycraft). The Fallout: New Vegas plugin, the memory
+dumper and everything else here are new work.
+
 ## License
 
 [MIT](LICENSE). Fallout: New Vegas and Minecraft are the property of their respective owners; this
