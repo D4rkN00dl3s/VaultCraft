@@ -360,6 +360,21 @@ implementation rather than a fork.
 - Everything else is checked against the running game. Use `tools/`: `dump_collision.py`,
   `probe_feet.py`, `tick_monitor.py` and `trace_motion.py` read the live shared mapping
   - `tools/check_link.py` is the phase 0 check: does the mapping exist, and is the game heartbeating.
+- `tools/run_game.ps1` starts the game and presses it through to the last save:
+
+  ```bat
+  powershell -ExecutionPolicy Bypass -File tools\run_game.ps1
+  ```
+
+  Steam's `steam://rungameid/22380` is the wrong door — it starts `FalloutNVLauncher.exe`, a separate
+  launcher app that then has to launch the game itself. The script runs `nvse_loader.exe` instead,
+  which is xNVSE's own entry point and starts `FalloutNV.exe` directly with NVSE loaded. Steam still
+  has to be running: the game checks for a client at startup, and `nvse_steam_loader.dll` only
+  satisfies the handshake, not the check.
+
+  It waits for the window handle and then for the menu to settle before sending keys, because the
+  window exists long before it accepts input and early keys are silently ignored — which looks
+  exactly like a broken script. `SendKeys` goes to the *focused* window, so focus is forced first.
 
   **Only run the four probes while the game is actually running.** They were ported from
   SkyCraft unchanged and still use Python's `mmap(tagname=...)`, which calls `CreateFileMapping`

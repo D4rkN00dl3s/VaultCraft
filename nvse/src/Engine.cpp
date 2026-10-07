@@ -284,12 +284,15 @@ int ScanForHavokObjects()
 					log::Info("      mopp+08 -> %08X", child);
 					if (CanRead(child, 0x30)) {
 						DumpWords("child", child, 12);
-						// The child carries pointers at +0x14/+0x18 and floats that include a value
-						// like 63647.6, which is an FNV world coordinate. That is the same signature
-						// the tri-strips data object had, so read both as floats: if these are the
-						// vertex and index arrays, the format question is closed.
-						DumpAsFloats("child+14", child + 0x14, 10);
-						DumpAsFloats("child+18", child + 0x18, 10);
+						// Dereference. Passing child+0x14 dumps the child's own field again, which
+						// is what the previous run did: both "arrays" came back as the child's own
+						// first two fields, and looked like plausible data while being nothing.
+						const std::uint32_t a14 = *reinterpret_cast<const std::uint32_t*>(child + 0x14);
+						const std::uint32_t a18 = *reinterpret_cast<const std::uint32_t*>(child + 0x18);
+						const std::uint32_t count = *reinterpret_cast<const std::uint32_t*>(child + 0x1C);
+						log::Info("      child: arr14=%08X arr18=%08X count=%u", a14, a18, count);
+						DumpAsFloats("arr14", a14, 12);
+						DumpAsFloats("arr18", a18, 12);
 					}
 					// Bounds are at +0x60..+0x7C on the 0x010C755C wrapper (from its own accessor,
 					// FUN_00ca37e0). Do not read them here: this is a different class, and the same
