@@ -29,6 +29,8 @@ add_library(VaultCraft SHARED ${VAULTCRAFT_SOURCES})
 set_target_properties(VaultCraft PROPERTIES
     OUTPUT_NAME "VaultCraft"
     PREFIX ""                       # VaultCraft.dll, not libVaultCraft.dll
+    PDB_NAME "VaultCraft"
+    PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
 
 target_include_directories(VaultCraft PRIVATE
@@ -70,7 +72,7 @@ if(VAULTCRAFT_DEPLOY_DIR AND EXISTS "${VAULTCRAFT_DEPLOY_DIR}")
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:VaultCraft>" "${VAULTCRAFT_DEPLOY_DIR}/"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_PDB_FILE:VaultCraft>" "${VAULTCRAFT_DEPLOY_DIR}/"
+            "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/VaultCraft.pdb" "${VAULTCRAFT_DEPLOY_DIR}/"
         COMMENT "Copying VaultCraft.dll to ${VAULTCRAFT_DEPLOY_DIR}"
         VERBATIM)
 endif()
