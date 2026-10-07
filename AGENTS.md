@@ -204,7 +204,7 @@ sizes come out of the factory constructors and none exceeds 32 bits of meaningfu
 BSHavok dispatch we have read is `undefined4 *` with 32-bit vtable calls. No 64-bit pointer traffic
 anywhere in the range `0x00b00000`–`0x00e00000`, which holds 9,529 of the exe's 63,261 functions.
 
-### The Havok spike, as far as it got
+### The Havok spike: what is established, and the dead ends
 
 The binary has no symbols and BSHavok is undecorated, so methods are all `FUN_xxxxxx` and there is
 nothing to grep for. Identification works two ways: BSHavok's own source paths and assert strings are
@@ -224,71 +224,71 @@ every known class vtable and counting:
 | **`bhkMoppBvTreeShape`** | **502** |
 | **`bhkPackedNiTriStripsShape`** | **501** |
 | `bhkLimitedHingeConstraint` | 213 |
-| **`hkPackedNiTriStripsData`** | **169** |
+| `hkPackedNiTriStripsData` | 169 |
 | `bhkMalleableConstraint` | 112 |
 | `bhkAabbPhantom` | 19 |
 | **`bhkNiTriStripsShape`** | **0** |
 
 Zero for `bhkNiTriStripsShape` is the useful result: scanning for it alone finds nothing and looks
-identical to a mistake. Static RE had pointed at it; the measurement overruled that. Terrain is
-`bhkMoppBvTreeShape` plus `bhkPackedNiTriStripsShape`, and the vertices live in
-`hkPackedNiTriStripsData`, which is a *data* class hanging off the shape.
-
-**The chain, with sizes read out of the factories** (`FUN_00ca53b0`, `FUN_00ca34c0`) rather than
-guessed:
-
-```
-bhkPackedNiTriStripsShape   0x14 bytes   vtable 0x010C761C   data ptrs at +0x0C and +0x10
-  -> hkPackedNiTriStripsData 0x30 bytes   vtable 0x010C740C   ptrs at +0x08 +0x0C +0x14 +0x18 +0x20 +0x24
-```
-
-**35 class vtables recovered** from `FUN_00c68230`, which registers each class by pushing its name
-and its factory; the factory stores the vtable at offset 0 last, after the base-class vtable. The
-method needs the factory to *exist* in Ghidra's view — pick the nearest preceding `push` of a code
-address inside the registration function, then take the last `.rdata` address the factory stores.
-That independently reproduced `0x010C771C` for `bhkNiTriStripsShape`, matching what its constructor
-says, which is the cross-check that the derivation is right.
-
-Nine factories yielded no vtable — `bhkBoxShape`, `bhkSphereShape`, `bhkCapsuleShape`,
-`bhkCylinderShape`, `bhkTriangleShape`, `bhkConvexVerticesShape`, `bhkConvexTransformShape`,
-`bhkConvexListShape`, `bhkCollisionObject` among them. Their constructors store the vtable by a route
-the current extraction misses. Characters and props use exactly those convex shapes, so this needs
-fixing before phase 2.
+identical to a mistake. Static RE had pointed at it; the measurement overruled that.
 
 **Scanning technique:** Havok object identity *is* the vtable, so one pass over committed memory
 identifies every class at once. Skip `MEM_IMAGE` — the vtables themselves live there and would match
 everything — and range-check each dword against the vtable span before looking it up, which is what
-keeps a full pass over the heap at a few hundred ms.
+keeps a full pass over the heap to a few hundred ms. `Engine.cpp` is this probe, kept as a diagnostic
+rather than deleted.
 
-**The full object chain is confirmed at runtime**, which is what phase 1 existed to establish:
+**35 class vtables recovered** from `FUN_00c68230`, which registers each class by pushing its name and
+its factory; the factory stores the vtable at offset 0 last, after the base-class vtable. The method
+needs the factory to *exist* in Ghidra's view — pick the nearest preceding `push` of a code address
+inside the registration function, then take the last `.rdata` address the factory stores. That
+independently reproduced `0x010C771C` for `bhkNiTriStripsShape`, matching what its constructor says,
+which is the cross-check that the derivation is right.
+
+Nine factories yielded no vtable — `bhkBoxShape`, `bhkSphereShape`, `bhkCapsuleShape`,
+`bhkCylinderShape`, `bhkTriangleShape`, `bhkConvexVerticesShape`, `bhkConvexTransformShape`,
+`bhkConvexListShape`, `bhkCollisionObject` among them. Characters and props use exactly those convex
+shapes, so this needs fixing before phase 2.
+
+**Bounds are at `+0x60`–`+0x7C`** on the `0x010C755C` wrapper: eight floats, read out as min/max by
+`FUN_00ca37e0`, which is that class's AABB accessor. Enough for coarse culling without vertex data.
+Do **not** read those offsets on a `bhkMoppBvTreeShape` — different class, and doing so yields a
+float of 136164352.0, which is not a bound.
+
+### The dead end, and why it matters
+
+Several runs went into decoding what turned out to be the **source asset file, not runtime vertices**:
 
 ```
-bhkMoppBvTreeShape (502/cell)  and  bhkPackedNiTriStripsShape (501/cell)
-  +0x08 -> a 0xB0-byte wrapper, vtable 0x010C755C
-            +0x84  -> hkPackedNiTriStripsData, 0x30 bytes, vtable 0x010C740C
-            +0x90..+0xA0  cached copies of that source's fields
+bhkMoppBvTreeShape +0x08  ->  vtable 0x010CA330, which is a Gamebryo asset loader
+                              (its vtable is followed by the literal string
+                               "_FallOut_3\Platforms\")
+                                +0x14 -> vtable 0x0102E368, a 0x30-byte data container
+                                +0x18 -> the packed blob
 ```
 
-The wrapper has a **second vtable at `+0x10`** (multiple inheritance) and is constructed by
-`FUN_00ca39f0` from factory `FUN_00ca5870`. Its factory references no class-name string, so the class
-has no recoverable name — it is tracked by vtable as `kTriStripsDataWrapperVtable` rather than given
-an invented one.
+`0x0102E368` has three destructors and refcounting and nothing else — a plain POD container, no
+interpreter. The blobs read as `7BFF841F`, `AAAAAAAA`, `000690D6` and are **not** a proprietary Havok
+encoding; they are unparsed `.msGame` bytes that the loader is still holding after Havok has already
+built its MOPP tree from them.
 
-**Bounds are at `+0x60`–`+0x7C`** on the wrapper: eight floats, read out as min/max by
-`FUN_00ca37e0`, which is the shape's AABB accessor. That is enough for coarse culling without
-touching vertex data.
+Runtime triangles therefore live inside the MOPP structure, which is a compressed BVH — the genuinely
+hard case, and the one the plan's fallback exists for. **Phase 1 decided: ray-cast, do not decode the
+MOPP.** That retires the question rather than deferring it.
 
-**What is still unknown is the vertex encoding.** The arrays read as bit-packed fields
-(`7BFF841F`, `AAAAAAAA`, `000690D6`), not coordinates — so they are not plain floats and cannot be
-read by dumping. Decoding them means reading the code that interprets them, which is the project-
-ending risk the plan flagged. **The phase 1 decision point is now live:** either commit to decoding
-Havok's packed format, or take the ray-casting fallback.
+Ray-casting is cheaper here than the plan assumed, because shapes are found by scanning and need no
+physics world: 1,003 per cell, each with a known vtable and a known AABB. Candidate entry point is
+`FUN_00d21450(this, in, out, ctx)` in the `0x010C755C` vtable — the `(this, input, output, context)`
+shape a Havok `rayCast` has. What it still needs is the `hkpRayCastInput` / `hkpRayCastOutput` layouts.
 
-Note that the fallback is cheaper than the plan assumed, because shapes are found by scanning and do
-not need the physics world: 1,003 of them per cell, each with a known vtable and a known AABB. What a
-ray-cast fallback still needs is a callable ray-cast entry point on these shapes.
+**A physics-system object is partly mapped** (unused so far, but it is how a `hkpWorld` would be
+reached): `FUN_00cd24d0(this, world)` stores the world at `this + 0x04`, and `FUN_00cd2530(this,
+world)` appends it to the array at `this + 0x6C` (count `+0x70`, capacity `+0x74`). Also present: four
+listener arrays at `+0x5C`–`+0x68`, another at `+0x84`/`+0x88`, and a world-context array at
+`+0x78`/`+0x7C` with a stride of **`0xF0`** — `sizeof(hkpWorldContext)`, and `hkpWorldCinfo` is
+referenced from the same function.
 
-**Four traps this cost a run each:**
+### Traps that each cost a run
 
 - **Timing.** Terrain collision is built *during* cell load. A scan fired on `kMessage_PostLoadGame`
   ran in the same millisecond as the message and found nothing. Scanning 5 s later, four times, found
@@ -297,13 +297,11 @@ ray-cast fallback still needs is a callable ray-cast entry point on these shapes
   it read like the world was still streaming in. It was not; the same objects were counted twice.
 - A global "dump the first N objects found" budget is useless: the scan walks memory in address order,
   so whichever class sits lowest consumes all of it. Dump by class name instead.
-
-**A physics-system object is partly mapped.** `FUN_00cd24d0(this, world)` stores the world at
-`this + 0x04`, and `FUN_00cd2530(this, world)` appends it to the array at `this + 0x6C` (count
-`+0x70`, capacity `+0x74`). Also present: four listener arrays at `+0x5C`–`+0x68`, another at
-`+0x84`/`+0x88`, and a world-context array at `+0x78`/`+0x7C` with a stride of **`0xF0`** — that
-stride is `sizeof(hkpWorldContext)`, and the `hkpWorldCinfo` string is referenced from the same
-function.
+- **Dereference pointers before dumping them.** `DumpWords(p->field)` prints the field again. That
+  produced two convincing-looking "arrays" that were just the object's own first two fields.
+- **Never read a field off a decompilation and act on it before confirming it is populated at
+  runtime.** That produced the empty `+0x88` and the bogus AABB. A dump that agrees with the previous
+  line is not evidence; check the plausibility of the *request*, not the output.
 
 **Two dead ends, so nobody walks them again:**
 

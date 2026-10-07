@@ -113,10 +113,10 @@ namespace
 		}
 	}
 
-	// Follows whatever a shape's geometry pointer lands on, whether or not we can name it, and
-	// dumps the two arrays. The data class the shape actually points at measured as vtable
-	// 0x010C755C, which is not the 0x010C740C the factory extraction produced for
-	// hkPackedNiTriStripsData - so naming it first would have blocked the one dump that matters.
+	// Reads a blob a Gamebryo asset loader is still holding. Kept because the dead end is the useful
+	// part: these bytes look like a proprietary packed format and are not. They are unparsed
+	// .msGame data that the loader retains after Havok has already built its MOPP tree from it.
+	// Runtime triangles are in the MOPP, which is a compressed BVH. That is why phase 2 ray-casts.
 	void DumpDataObject(const char* a_label, const std::uintptr_t a_p)
 	{
 		if (!CanRead(a_p, 0x30)) {

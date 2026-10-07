@@ -3,6 +3,26 @@
 #include <cstddef>
 #include <cstdint>
 
+// Raw addresses for this exact Fallout: New Vegas build, recovered from a live-memory dump and
+// confirmed against the Ghidra project at ~/ghidra-proj/fnv. Fallout: New Vegas has no Address
+// Library, so these are absolute and must be re-found by hand after any engine-mutating mod. The
+// table lives in Engine.cpp so there is a single place to re-verify.
+//
+// What each of these turned out to be, since none of it was obvious and most of it cost a run:
+//
+//   0x010CA24C  bhkMoppBvTreeShape, terrain - 502 per loaded cell, and the real geometry.
+//   0x010CA330  Gamebryo asset loader - what bhkMoppBvTreeShape+0x08 points at. The literal string
+//               "_FallOut_3\Platforms\" sits immediately after this vtable. NOT the geometry.
+//   0x0102E368  POD data container, 0x30 bytes - reached from the loader at +0x14. Three
+//               destructors and refcounting, nothing else: there is no interpreter in it.
+//   0x010C755C  tri-strips wrapper, 0xB0 bytes - second vtable at +0x10 (multiple inheritance).
+//               Its AABB is at +0x60..+0x7C, read out by FUN_00ca37e0. Those offsets belong to
+//               this class alone; on any other they yield a float of 136164352.0.
+//   0x010C740C  hkPackedNiTriStripsData.
+//
+// Phase 2 will ray-cast rather than read vertices. Candidate entry point is
+// FUN_00d21450(this, in, out, ctx) in the 0x010C755C vtable - the (this, input, output, context)
+// shape a Havok rayCast has. Recovering its input/output struct layouts is the next task.
 namespace vaultcraft::addr
 {
 	// One Havok class and the address of its vtable. Object identity in Havok is the vtable: two
