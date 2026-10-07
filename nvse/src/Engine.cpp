@@ -138,15 +138,31 @@ namespace
 				return;
 			}
 			log::Info("      %s wrapper: src@+84=%08X  count@+A0=%u", a_label, d[0x84 / 4], d[0xA0 / 4]);
-			DumpAsFloats("wrap+94", a_p + 0x94, 10);
-			DumpAsFloats("wrap+98", a_p + 0x98, 10);
-			const std::uint32_t src = d[0x84 / 4];
-			if (CanRead(src, 0x30)) {
-				log::Info("      %s source -> %08X vtable %08X", a_label, src,
-					*reinterpret_cast<const std::uint32_t*>(src));
-				DumpAsFloats("src+14", src + 0x14, 10);
-				DumpAsFloats("src+18", src + 0x18, 10);
+			// Triangle layout, from FUN_00ca45b0, the shape's triangle accessor:
+			//   this+0x88 -> page table, one 8-byte entry per 2^20 triangles
+			//   page      -> block; block+0x20 = vertex array base
+			//   block+0x44 = u16 sub-triangle count, block+0x48 = u16 sub-triangle boundaries
+			// A vertex is three floats, 12 bytes; indices are u16. The index stream is packed, the
+			// positions are not - which is the opposite of what the raw arrays suggested.
+			const std::uint32_t pageTable = d[0x88 / 4];
+			if (!CanRead(pageTable, 8)) {
+				log::Info("      %s page table %08X unreadable", a_label, pageTable);
+				return;
 			}
+			const std::uint32_t block = *reinterpret_cast<const std::uint32_t*>(pageTable);
+			if (!CanRead(block, 0x4C)) {
+				log::Info("      %s page0 block %08X unreadable", a_label, block);
+				return;
+			}
+			const std::uint32_t vertBase = *reinterpret_cast<const std::uint32_t*>(block + 0x20);
+			const std::uint16_t subCount =
+				*reinterpret_cast<const std::uint16_t*>(block + 0x44);
+			const std::uint32_t subOff = *reinterpret_cast<const std::uint32_t*>(block + 0x48);
+			log::Info("      %s page0 block=%08X  verts=%08X  subTris=%u  subOff=%08X", a_label,
+				block, vertBase, subCount, subOff);
+			// Four vertices = twelve floats. FNV is Y-up with Z south, so a run of plausible
+			// magnitudes across three consecutive floats is the confirmation that this is right.
+			DumpAsFloats("verts", vertBase, 12);
 			return;
 		}
 
@@ -167,6 +183,16 @@ namespace
 	// The classes worth dumping. A global dump budget is useless here: the scan walks memory in
 	// address order, so whichever class happens to sit lowest wins all of it and the terrain
 	// classes - the entire point of the spike - get nothing.
+	int IndexOfClass(const char* a_name)
+	{
+		for (std::size_t i = 0; i < addr::kHavokShapeClassCount; ++i) {
+			if (std::strcmp(addr::kHavokShapeClasses[i].name, a_name) == 0) {
+				return static_cast<int>(i);
+			}
+		}
+		return -1;
+	}
+
 	bool WorthDumping(const char* a_name)
 	{
 		for (const char* n : kDumpOrder) {
@@ -190,6 +216,7 @@ int ScanForHavokObjects()
 	std::vector<int> dumped(addr::kHavokShapeClassCount, 0);
 
 	int total = 0;
+	int populated = 0;
 
 	SYSTEM_INFO si{};
 	::GetSystemInfo(&si);
@@ -249,8 +276,27 @@ int ScanForHavokObjects()
 				// +0x14, and its +0x04/+0x08/+0x0C/+0x10 line up with the standalone shapes'
 				// 1 / pointer / 0 / 0. The constructor only told us which fields start at zero, which
 				// is not the same as which one holds the data.
-				if (std::strcmp(addr::kHavokShapeClasses[idx].name, "bhkPackedNiTriStripsShape") == 0) {
-					DumpDataObject("shape+08", reinterpret_cast<const std::uint32_t*>(obj)[2]);
+				if (std::strcmp(addr::kHavokShapeClasses[idx].name, "bhkMoppBvTreeShape") == 0) {
+					// The 501 tri-strips shapes turned out to be empty shells - wrapper+0x88 is null on
+					// all but one, and that one points into unmapped memory. So the geometry lives in
+					// the 502 MOPP shapes, and this follows their +0x08, which nothing has read yet.
+					const std::uint32_t child = reinterpret_cast<const std::uint32_t*>(obj)[2];
+					log::Info("      mopp+08 -> %08X", child);
+					if (CanRead(child, 0x30)) {
+						DumpWords("child", child, 12);
+						// The child carries pointers at +0x14/+0x18 and floats that include a value
+						// like 63647.6, which is an FNV world coordinate. That is the same signature
+						// the tri-strips data object had, so read both as floats: if these are the
+						// vertex and index arrays, the format question is closed.
+						DumpAsFloats("child+14", child + 0x14, 10);
+						DumpAsFloats("child+18", child + 0x18, 10);
+					}
+					// Bounds are at +0x60..+0x7C on the 0x010C755C wrapper (from its own accessor,
+					// FUN_00ca37e0). Do not read them here: this is a different class, and the same
+					// offsets on it produced a float of 136164352.0, which is not a bound.
+				} else if (std::strcmp(addr::kHavokShapeClasses[idx].name,
+				                        "bhkPackedNiTriStripsShape") == 0) {
+					DumpWords("strip", obj, 6);
 				} else if (std::strcmp(addr::kHavokShapeClasses[idx].name,
 				                        "hkPackedNiTriStripsData") == 0) {
 					// Also dump the data objects on their own. Going through a shape depends on the
@@ -274,6 +320,12 @@ int ScanForHavokObjects()
 	}
 	log::Info("havok scan: %d object(s) across %d class(es), %llu ms", total, classes,
 		static_cast<unsigned long long>(elapsed));
+	const int triStrip = IndexOfClass("bhkPackedNiTriStripsShape");
+	const int mopp = IndexOfClass("bhkMoppBvTreeShape");
+	if (triStrip >= 0 && mopp >= 0) {
+		log::Info("shape census: %d tri-strips (empty shells), %d MOPP", counts[triStrip],
+			counts[mopp]);
+	}
 	return total;
 }
 } // namespace vaultcraft::engine
