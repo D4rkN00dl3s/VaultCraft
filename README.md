@@ -27,7 +27,7 @@ hook is a raw address. That half is being written from scratch.
 ## Requirements
 
 **Fallout: New Vegas** with [xNVSE](https://github.com/xNVSE/NVSE/releases) installed. The plugin
-DLL goes in the same folder as `FalloutNV.exe`, not in `Data\`.
+DLL goes in `Data\NVSE\Plugins\`, which is the only directory xNVSE scans for plugins.
 
 **Minecraft**: Java Edition, Minecraft 26.3, Fabric Loader 0.19.5+, Fabric API, and JDK 25.
 

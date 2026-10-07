@@ -90,17 +90,26 @@ if(MSVC)
     target_link_options(VaultCraft PRIVATE /DEBUG:FULL)
 endif()
 
-# Development convenience: copy the built DLL next to FalloutNV.exe so xNVSE picks it up.
-# xNVSE is not a virtual-filesystem mod manager, so there is no MO2 profile to deploy into.
+# Development convenience: copy the built plugin where xNVSE will actually find it.
+#
+# The game root is NOT where plugins go. That folder holds xNVSE's own core DLLs, which its loader
+# opens by name. PluginManager.cpp scans exactly one directory for plugins and nowhere else:
+#     m_pluginDirectory = falloutDirectory + "Data\\NVSE\\Plugins\\";   (PluginManager.cpp:548)
+#     for (IDirectoryIterator iter(m_pluginDirectory.c_str(), "*.dll"); ...)  (line 688)
+# So VAULTCRAFT_DEPLOY_DIR is the *game folder*, and the Data\NVSE\Plugins part is appended here.
+# Pointing at the game root alone produces a DLL that builds, deploys, and is then silently ignored,
+# with no log file to explain why.
+#
 # A failed copy is a warning, not a build error: a running game holds the DLL.
-set(VAULTCRAFT_DEPLOY_DIR "" CACHE PATH "Fallout: New Vegas folder to copy the built plugin into")
+set(VAULTCRAFT_DEPLOY_DIR "" CACHE PATH "Fallout: New Vegas folder (the one holding FalloutNV.exe)")
 if(VAULTCRAFT_DEPLOY_DIR AND EXISTS "${VAULTCRAFT_DEPLOY_DIR}")
+    set(VAULTCRAFT_PLUGIN_DIR "${VAULTCRAFT_DEPLOY_DIR}/Data/NVSE/Plugins")
     add_custom_command(TARGET VaultCraft POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${VAULTCRAFT_DEPLOY_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${VAULTCRAFT_PLUGIN_DIR}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:VaultCraft>" "${VAULTCRAFT_DEPLOY_DIR}/"
+            "$<TARGET_FILE:VaultCraft>" "${VAULTCRAFT_PLUGIN_DIR}/"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/VaultCraft.pdb" "${VAULTCRAFT_DEPLOY_DIR}/"
-        COMMENT "Copying VaultCraft.dll to ${VAULTCRAFT_DEPLOY_DIR}"
+            "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/VaultCraft.pdb" "${VAULTCRAFT_PLUGIN_DIR}/"
+        COMMENT "Copying VaultCraft.dll to ${VAULTCRAFT_PLUGIN_DIR}"
         VERBATIM)
 endif()

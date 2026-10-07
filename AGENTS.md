@@ -40,10 +40,22 @@ Pass `--no-configuration-cache` to every `gradlew` call, the way `tools/` script
 `gradle.properties` enables the cache.
 
 `VAULTCRAFT_DEPLOY_DIR` (set by the `default` preset to the Fallout: New Vegas folder) copies the
-built DLL next to `FalloutNV.exe` after each build, but only if that folder already exists. **xNVSE
-is not a virtual-filesystem mod manager**: the plugin DLL sits beside the exe, not in `Data\` and
-not in an MO2 profile. A failed copy is a warning, not a build error — a running game holds the
-DLL.
+built DLL into `Data\NVSE\Plugins\` after each build, creating it if needed. A failed copy is a
+warning, not a build error — a running game holds the DLL.
+
+**That folder is not a guess.** xNVSE loads its *core* DLLs (`nvse_1_4.dll` and friends) from the
+game root by name, but plugins it scans exactly one directory, and nowhere else:
+
+```cpp
+m_pluginDirectory = falloutDirectory + "Data\\NVSE\\Plugins\\";   // PluginManager.cpp:548
+for (IDirectoryIterator iter(m_pluginDirectory.c_str(), "*.dll"); ...)  // :688
+```
+
+A plugin dropped in the game root is silently ignored: it builds, deploys, never loads, and writes
+no log to explain why. That is the shape of the failure, so it is worth recognising.
+
+The plugin writes `VaultCraft.log` to the **game root**, not to `Data\NVSE\Plugins`, so it sits
+alongside `FalloutNV.exe` where the rest of the game's logs are.
 
 The build is `Win32`, not `x64`, and `CMakeLists.txt` fails configuration if you get it wrong.
 Fallout: New Vegas is a 32-bit game; a 64-bit plugin cannot load into it.
@@ -163,8 +175,8 @@ implementation rather than a fork.
   the port diffs against it cleanly. If you rename them, rename the Fabric mod id, both mixin
   configs, and the `data/skycraft/` resource paths together.
 - C++20, MSVC `/W4 /permissive-`. Java 25.
-- Logging: the plugin goes through spdlog to `VaultCraft.log` in the xNVSE log directory. The mod
-  uses its own slf4j logger.
+- Logging: the plugin uses its own `src/Log.cpp`, writing `VaultCraft.log` to the game root and
+  mirroring to `OutputDebugString`. The mod uses its own slf4j logger.
 - Comments in this repo are plain and direct, with no filler. Match that.
 
 ## Verifying changes
