@@ -6,10 +6,14 @@
 static PluginHandle   g_pluginHandle = kPluginHandle_Invalid;
 static NVSEInterface* g_nvse = nullptr;
 
-// Phase 1 spike, throwaway: run the terrain-shape scan once, on the first save load. Terrain
-// collision only exists once a cell is in memory, so save load is the earliest point where there is
-// anything to find, and once is enough - this blocks for a second or two and is not coming back.
-static bool g_spiked = false;
+// Phase 1 spike, throwaway: scan for Havok objects a few times after a cell has finished loading.
+//
+// The first attempt fired on kMessage_PostLoadGame and found one stray match, because terrain
+// collision is built *during* cell load - the scan ran in the same millisecond as the message and the
+// cell did not exist yet. The second attempt delayed it and found the difference. Several passes,
+// because a streamed cell keeps building for a while after the save is up.
+static int   g_scansLeft = 0;
+static DWORD g_nextScan = 0;
 
 namespace
 {
@@ -21,16 +25,21 @@ namespace
 		switch (a_msg->type) {
 		case NVSEMessagingInterface::kMessage_MainGameLoop:
 			vaultcraft::Link::Get().Heartbeat();
+			if (g_scansLeft > 0 && ::GetTickCount() >= g_nextScan) {
+				--g_scansLeft;
+				g_nextScan = ::GetTickCount() + 5000;
+				vaultcraft::log::Info("havok scan pass %d", 4 - g_scansLeft);
+				vaultcraft::engine::ScanForHavokObjects();
+			}
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoad:
 			vaultcraft::log::Info("game loaded");
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoadGame:
 			vaultcraft::log::Info("save loaded");
-			if (!g_spiked) {
-				g_spiked = true;
-				vaultcraft::engine::ScanForTerrainShapes();
-			}
+			// Deliberately not on this message: the cell is still being built here.
+			g_scansLeft = 4;
+			g_nextScan = ::GetTickCount() + 5000;
 			break;
 		case NVSEMessagingInterface::kMessage_ExitGame:
 			vaultcraft::log::Info("leaving the game");

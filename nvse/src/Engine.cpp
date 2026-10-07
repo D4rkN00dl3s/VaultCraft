@@ -3,15 +3,68 @@
 #include "Log.h"
 
 #include <cstring>
+#include <vector>
+
+namespace vaultcraft::addr
+{
+	// Sorted by vtable: the runtime lookup below relies on the cheap range check in the scan loop.
+	const HavokShapeClass kHavokShapeClasses[] = {
+		{ "bhkMouseSpringAction",       0x0101FFCCu },
+		{ "bhkRigidBody",               0x010301B4u },
+		{ "bhkAabbPhantom",             0x01030864u },
+		{ "bhkMultiSphereShape",        0x01066C5Cu },
+		{ "bhkTransformShape",          0x01066D44u },
+		{ "bhkHingeConstraint",         0x0108FDDCu },
+		{ "bhkListShape",               0x010C485Cu },
+		{ "bhkStiffSpringConstraint",   0x010C52BCu },
+		{ "bhkBlendCollisionObject",    0x010C53DCu },
+		{ "bhkLimitedHingeConstraint",  0x010C5CE4u },
+		{ "hkPackedNiTriStripsData",    0x010C740Cu },
+		{ "bhkPackedNiTriStripsShape",  0x010C761Cu },
+		{ "bhkNiTriStripsShape",        0x010C771Cu },
+		{ "bhkMalleableConstraint",     0x010C81ACu },
+		{ "bhkOrientHingedBodyAction",  0x010C8914u },
+		{ "bhkPoseArray",               0x010C93FCu },
+		{ "bhkSpringAction",            0x010C955Cu },
+		{ "bhkMotorAction",             0x010C9634u },
+		{ "bhkDashpotAction",           0x010C970Cu },
+		{ "bhkAngularDashpotAction",    0x010C97E4u },
+		{ "bhkBreakableConstraint",     0x010C98BCu },
+		{ "bhkWheelConstraint",         0x010C9A14u },
+		{ "bhkRagdollLimitsConstraint", 0x010C9B0Cu },
+		{ "bhkPrismaticConstraint",     0x010C9C84u },
+		{ "bhkFixedConstraint",         0x010C9D7Cu },
+		{ "bhkHingeLimitsConstraint",   0x010C9F74u },
+		{ "bhkBallSocketConstraintChain", 0x010CA06Cu },
+		{ "bhkMoppBvTreeShape",         0x010CA24Cu },
+		{ "bhkPlaneShape",              0x010CA4DCu },
+		{ "bhkExtendedMeshShapeData",   0x010CA6B4u },
+		{ "bhkExtendedMeshShape",       0x010CA744u },
+		{ "bhkConvexSweepShape",        0x010CAAF4u },
+	};
+	const std::size_t kHavokShapeClassCount = sizeof(kHavokShapeClasses) / sizeof(kHavokShapeClasses[0]);
+} // namespace vaultcraft::addr
 
 namespace vaultcraft::engine
 {
 namespace
 {
-	// A candidate is only interesting if its two data pointers land in readable private memory,
-	// because BSHavok allocates through its own pools (MEM_PRIVATE). A pointer into an image or
-	// into no memory at all means we matched something that is not a live shape.
-	bool IsLivePrivate(const std::uintptr_t a_p)
+	// Linear, not binary: the scan loop's range check already rejects almost every dword, so this
+	// table is never walked far and a search tree would be noise.
+	int Lookup(const std::uint32_t a_vtable)
+	{
+		for (std::size_t i = 0; i < addr::kHavokShapeClassCount; ++i) {
+			if (static_cast<std::uint32_t>(addr::kHavokShapeClasses[i].vtable) == a_vtable) {
+				return static_cast<int>(i);
+			}
+		}
+		return -1;
+	}
+
+	// True only if the whole range is inside one committed, readable, unguarded region. Anything
+	// looser and the scan can fault the game on the last page of the heap, which would cost more
+	// than the spike is worth.
+	bool CanRead(const std::uintptr_t a_p, const std::size_t a_len)
 	{
 		if (a_p < 0x00010000u) {
 			return false;
@@ -20,108 +73,124 @@ namespace
 		if (::VirtualQuery(reinterpret_cast<LPCVOID>(a_p), &mbi, sizeof(mbi)) == 0) {
 			return false;
 		}
-		if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE) {
-			return false;
-		}
-		if ((mbi.Protect & PAGE_GUARD) != 0 || (mbi.Protect & PAGE_NOACCESS) != 0) {
-			return false;
-		}
-		return a_p < reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-	}
-
-	bool IsReadable(const std::uintptr_t a_p)
-	{
-		MEMORY_BASIC_INFORMATION mbi{};
-		if (::VirtualQuery(reinterpret_cast<LPCVOID>(a_p), &mbi, sizeof(mbi)) == 0) {
-			return false;
-		}
 		if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD) != 0 ||
 			(mbi.Protect & PAGE_NOACCESS) != 0) {
 			return false;
 		}
-		return a_p < reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+		const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+		return a_p >= base && (a_p - base) + a_len <= mbi.RegionSize;
 	}
 
-	void DumpWords(const char* a_what, const std::uintptr_t a_p)
+	void DumpWords(const char* a_label, const std::uintptr_t a_p, const int a_count)
 	{
-		if (!IsReadable(a_p)) {
-			log::Info("    %s -> %08X (not readable)", a_what, static_cast<unsigned long>(a_p));
+		if (!CanRead(a_p, static_cast<std::size_t>(a_count) * sizeof(std::uint32_t))) {
+			log::Info("      %s -> %08X (not readable)", a_label, static_cast<unsigned long>(a_p));
 			return;
 		}
-		const auto* words = reinterpret_cast<const unsigned int*>(a_p);
-		log::Info("    %s -> %08X  [%08X %08X %08X %08X]", a_what, static_cast<unsigned long>(a_p),
-			words[0], words[1], words[2], words[3]);
+		const auto* w = reinterpret_cast<const std::uint32_t*>(a_p);
+		for (int i = 0; i < a_count; ++i) {
+			const std::uintptr_t v = w[i];
+			const int cls = Lookup(static_cast<std::uint32_t>(v));
+			log::Info("      %s +%02X = %08X%s", a_label, i * 4, static_cast<unsigned long>(v),
+				cls >= 0 ? ("   <- " + std::string(addr::kHavokShapeClasses[cls].name)).c_str() : "");
+		}
 	}
 
-	// Keeps the log readable. The answer to "how many are there" is one number; the answer to "what
-	// does one look like" is the first handful.
-	constexpr int kMaxLogged = 6;
-	constexpr int kMaxHits = 512;
+	// The classes worth dumping, in the order worth dumping them. A global dump budget is useless
+	// here: the scan walks memory in address order, so whichever class happens to sit lowest wins
+	// all of it and the terrain classes - the entire point - get nothing.
+	const char* const kDumpOrder[] = {
+		"bhkPackedNiTriStripsShape",
+		"hkPackedNiTriStripsData",
+		"bhkMoppBvTreeShape",
+		"bhkNiTriStripsShape",
+	};
+	// The classes worth dumping. A global dump budget is useless here: the scan walks memory in
+	// address order, so whichever class happens to sit lowest wins all of it and the terrain
+	// classes - the entire point of the spike - get nothing.
+	bool WorthDumping(const char* a_name)
+	{
+		for (const char* n : kDumpOrder) {
+			if (std::strcmp(a_name, n) == 0) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	constexpr int kDumpEach = 3;
+	constexpr int kMaxObjectsPerClass = 40000;
 } // namespace
 
-int ScanForTerrainShapes()
+int ScanForHavokObjects()
 {
-	const std::uint32_t needle = static_cast<std::uint32_t>(addr::kBhkNiTriStripsShapeVtable);
-	constexpr std::size_t kNeedleBytes = sizeof(needle);
+	// Local, not static: a previous run of this spiked counters accumulated across passes, so pass 2
+	// reported double pass 1 and it read like the world was still streaming in. It was not - the
+	// objects were the same ones being counted twice.
+	std::vector<int> counts(addr::kHavokShapeClassCount, 0);
+	std::vector<int> dumped(addr::kHavokShapeClassCount, 0);
+
+	int total = 0;
 
 	SYSTEM_INFO si{};
 	::GetSystemInfo(&si);
-	const std::uintptr_t kLimit =
-		reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
+	const std::uintptr_t kLimit = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
 
-	// Skip the low 64 KiB: it is permanently unmapped and holding the null guard region, and there
-	// is nothing useful down there.
+	// The low 64 KiB is permanently unmapped and holds the null guard region.
 	std::uintptr_t cursor = 0x00010000u;
 
-	ULONGLONG tick = ::GetTickCount64();
-	int hits = 0;
-	int scanned = 0;
+	const ULONGLONG started = ::GetTickCount64();
 
-	while (cursor < kLimit && hits < kMaxHits) {
+	while (cursor < kLimit) {
 		MEMORY_BASIC_INFORMATION mbi{};
 		if (::VirtualQuery(reinterpret_cast<LPCVOID>(cursor), &mbi, sizeof(mbi)) == 0) {
 			break;
 		}
-		const std::uintptr_t regionStart =
-			reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+		const std::uintptr_t regionStart = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
 		const std::uintptr_t regionEnd = regionStart + mbi.RegionSize;
 		if (regionEnd <= cursor) {
 			break;
 		}
 
-		// MEM_IMAGE is skipped deliberately. The vtable itself lives there, so searching it would
-		// always match the class we are looking for, and shapes live on the heap regardless.
-		const bool usable = mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
-			(mbi.Protect & PAGE_GUARD) == 0 && (mbi.Protect & PAGE_NOACCESS) == 0;
-		if (usable && mbi.RegionSize >= kNeedleBytes) {
-			const auto* base = reinterpret_cast<const unsigned char*>(regionStart);
-			scanned += static_cast<int>(mbi.RegionSize);
-			for (std::size_t i = 0; i + kNeedleBytes <= mbi.RegionSize; ++i) {
-				if (std::memcmp(base + i, &needle, kNeedleBytes) != 0) {
-					continue;
-				}
-				const std::uintptr_t obj = regionStart + i;
+		// MEM_IMAGE is skipped: the vtables live there, so searching it would match every class we
+		// know about, and no Havok object is ever allocated into the module image.
+		const bool usable = mbi.State == MEM_COMMIT && mbi.Type != MEM_IMAGE &&
+			(mbi.Protect & PAGE_GUARD) == 0 && (mbi.Protect & PAGE_NOACCESS) == 0 &&
+			mbi.RegionSize >= sizeof(std::uint32_t);
 
-				// The vtable must start the object, so there has to be room for the whole thing.
-				if (obj + addr::kBhkNiTriStripsShapeSize > regionEnd) {
+		if (usable) {
+			const auto* words = reinterpret_cast<const std::uint32_t*>(regionStart);
+			const std::size_t n = static_cast<std::size_t>(mbi.RegionSize) / sizeof(std::uint32_t);
+			for (std::size_t i = 0; i < n; ++i) {
+				const std::uint32_t v = words[i];
+				// Cheap reject first. Nearly every dword in the process fails both compares, and that
+				// is what keeps a full pass over the heap down to a few hundred ms.
+				if (v < addr::kVtableLo || v > addr::kVtableHi) {
 					continue;
 				}
-				const auto* o = reinterpret_cast<const unsigned int*>(obj);
-				const std::uintptr_t p0c = o[addr::kBhkNiTriStripsShapeSize / 4 - 2];
-				const std::uintptr_t p10 = o[addr::kBhkNiTriStripsShapeSize / 4 - 1];
-				if (!IsLivePrivate(p0c) || !IsLivePrivate(p10)) {
+				const int idx = Lookup(v);
+				if (idx < 0 || counts[idx] >= kMaxObjectsPerClass) {
 					continue;
 				}
+				++counts[idx];
+				++total;
 
-				++hits;
-				if (hits <= kMaxLogged) {
-					log::Info("terrain shape %d @ %08X  words [%08X %08X %08X %08X %08X]", hits,
-						static_cast<unsigned long>(obj), o[0], o[1], o[2], o[3], o[4]);
-					DumpWords("+0C", p0c);
-					DumpWords("+10", p10);
+				const std::uintptr_t obj = regionStart + i * sizeof(std::uint32_t);
+				if (dumped[idx] >= kDumpEach || !WorthDumping(addr::kHavokShapeClasses[idx].name)) {
+					continue;
 				}
-				if (hits == 1) {
-					log::Info("  (further matches are counted but not dumped)");
+				++dumped[idx];
+
+				log::Info("%s @ %08X", addr::kHavokShapeClasses[idx].name,
+					static_cast<unsigned long>(obj));
+				DumpWords("self", obj, 12);
+
+				// A bhkShape is 0x14 bytes whose last two fields are the geometry pointers. Following
+				// them is the whole question: if either lands on an hkPackedNiTriStripsData then the
+				// triangle data is reachable, and there is no need to reach the physics world at all.
+				if (std::strcmp(addr::kHavokShapeClasses[idx].name, "bhkPackedNiTriStripsShape") == 0) {
+					DumpWords("+0C", obj + 0x0C, 1);
+					DumpWords("+10", obj + 0x10, 1);
 				}
 			}
 		}
@@ -129,9 +198,16 @@ int ScanForTerrainShapes()
 		cursor = regionEnd;
 	}
 
-	tick = ::GetTickCount64() - tick;
-	log::Info("terrain shape scan: %d candidate(s) in %d MB, %llu ms", hits, scanned / (1024 * 1024),
-		static_cast<unsigned long long>(tick));
-	return hits;
+	const ULONGLONG elapsed = ::GetTickCount64() - started;
+	int classes = 0;
+	for (std::size_t i = 0; i < addr::kHavokShapeClassCount; ++i) {
+		if (counts[i] != 0) {
+			++classes;
+			log::Info("  %-30s %d", addr::kHavokShapeClasses[i].name, counts[i]);
+		}
+	}
+	log::Info("havok scan: %d object(s) across %d class(es), %llu ms", total, classes,
+		static_cast<unsigned long long>(elapsed));
+	return total;
 }
 } // namespace vaultcraft::engine

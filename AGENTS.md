@@ -214,18 +214,61 @@ linked in, and each class's factory is reachable from `FUN_00c68230`.
 `bhkCharacterProxy`, `hkpTriSampledHeightFieldBvTreeShape`, `hkPackedNiTriStripsData`, and so on. FNV
 drives its player with a Havok **character proxy**, which is worth knowing for the phase 2 puppet.
 
-**`bhkNiTriStripsShape` is decoded.** Its factory `FUN_00ca6670` allocates `0x14` bytes, stores the
-vtable pointer `0x010C771C` at offset 0, and zeroes `0x0C` and `0x10`:
+**FNV's terrain is *not* `bhkNiTriStripsShape`.** Measured in a live cell, by scanning the heap for
+every known class vtable and counting:
 
-```cpp
-constexpr std::uintptr_t kBhkNiTriStripsShapeVtable = 0x010C771C;   // Engine.h
-constexpr std::size_t      kBhkNiTriStripsShapeSize   = 0x14;
+| Class | Objects in one loaded cell |
+|---|---|
+| `bhkRigidBody` | 2112 |
+| `bhkBlendCollisionObject` | 811 |
+| **`bhkMoppBvTreeShape`** | **502** |
+| **`bhkPackedNiTriStripsShape`** | **501** |
+| `bhkLimitedHingeConstraint` | 213 |
+| **`hkPackedNiTriStripsData`** | **169** |
+| `bhkMalleableConstraint` | 112 |
+| `bhkAabbPhantom` | 19 |
+| **`bhkNiTriStripsShape`** | **0** |
+
+Zero for `bhkNiTriStripsShape` is the useful result: scanning for it alone finds nothing and looks
+identical to a mistake. Static RE had pointed at it; the measurement overruled that. Terrain is
+`bhkMoppBvTreeShape` plus `bhkPackedNiTriStripsShape`, and the vertices live in
+`hkPackedNiTriStripsData`, which is a *data* class hanging off the shape.
+
+**The chain, with sizes read out of the factories** (`FUN_00ca53b0`, `FUN_00ca34c0`) rather than
+guessed:
+
+```
+bhkPackedNiTriStripsShape   0x14 bytes   vtable 0x010C761C   data ptrs at +0x0C and +0x10
+  -> hkPackedNiTriStripsData 0x30 bytes   vtable 0x010C740C   ptrs at +0x08 +0x0C +0x14 +0x18 +0x20 +0x24
 ```
 
-So size and vtable are *read out of the constructor*, not inferred. The vtable is mostly `purecall`
-stubs at `+0x0C`–`+0x44`, with real methods at `+0x00` (destructor), `+0x04`, `+0x72` (`FUN_00ca6990`,
-a clone) and `+0x7C` (`FUN_00ca7a70`, reads the shape from a file stream). `0x0C` and `0x10` are
-the two data pointers; what they point at is the open question.
+**35 class vtables recovered** from `FUN_00c68230`, which registers each class by pushing its name
+and its factory; the factory stores the vtable at offset 0 last, after the base-class vtable. The
+method needs the factory to *exist* in Ghidra's view — pick the nearest preceding `push` of a code
+address inside the registration function, then take the last `.rdata` address the factory stores.
+That independently reproduced `0x010C771C` for `bhkNiTriStripsShape`, matching what its constructor
+says, which is the cross-check that the derivation is right.
+
+Nine factories yielded no vtable — `bhkBoxShape`, `bhkSphereShape`, `bhkCapsuleShape`,
+`bhkCylinderShape`, `bhkTriangleShape`, `bhkConvexVerticesShape`, `bhkConvexTransformShape`,
+`bhkConvexListShape`, `bhkCollisionObject` among them. Their constructors store the vtable by a route
+the current extraction misses. Characters and props use exactly those convex shapes, so this needs
+fixing before phase 2.
+
+**Scanning technique:** Havok object identity *is* the vtable, so one pass over committed memory
+identifies every class at once. Skip `MEM_IMAGE` — the vtables themselves live there and would match
+everything — and range-check each dword against the vtable span before looking it up, which is what
+keeps a full pass over the heap at a few hundred ms.
+
+**Two traps this cost a run each:**
+
+- **Timing.** Terrain collision is built *during* cell load. A scan fired on `kMessage_PostLoadGame`
+  ran in the same millisecond as the message and found nothing. Scanning 5 s later, four times, found
+  4,450 objects on the first pass and nothing new after — the cell is fully built well before then.
+- **Counters must reset per pass.** They were `static`, so pass 2 reported exactly double pass 1 and
+  it read like the world was still streaming in. It was not; the same objects were counted twice.
+- A global "dump the first N objects found" budget is useless: the scan walks memory in address order,
+  so whichever class sits lowest consumes all of it. Dump by class name instead.
 
 **A physics-system object is partly mapped.** `FUN_00cd24d0(this, world)` stores the world at
 `this + 0x04`, and `FUN_00cd2530(this, world)` appends it to the array at `this + 0x6C` (count

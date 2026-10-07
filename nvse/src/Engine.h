@@ -3,29 +3,43 @@
 #include <cstddef>
 #include <cstdint>
 
-// Raw addresses for this exact Fallout: New Vegas build, recovered from a live-memory dump and
-// confirmed against the Ghidra project at ~/ghidra-proj/fnv. Fallout: New Vegas has no Address
-// Library, so these are absolute and must be re-found by hand after any engine-mutating mod. They
-// live in one table in Engine.cpp so there is a single place to re-verify.
 namespace vaultcraft::addr
 {
-	// bhkNiTriStripsShape, the shape class FNV builds its static terrain collision from.
+	// One Havok class and the address of its vtable. Object identity in Havok is the vtable: two
+	// objects of different classes cannot share one, and every instance starts with its own.
+	struct HavokShapeClass
+	{
+		const char* name;
+		std::uintptr_t vtable;
+	};
+
+	// All 35 classes whose vtable could be read out of a BSHavok factory. Derived mechanically from
+	// FUN_00c68230, which registers each class by pushing its name and its factory; the factory
+	// allocates the object and stores the vtable at offset 0 last, after the base-class vtable.
 	//
-	// FUN_00ca6670 is the class factory, registered by FUN_00c68230 alongside every other shape.
-	// It allocates 0x14 bytes, stores this vtable pointer at offset 0, and zeroes 0x0C and 0x10 -
-	// so the object size and vtable below are read out of the constructor rather than inferred.
-	// Offset 0x0C and 0x10 are the two data pointers; what they point at is what this spike is for.
-	constexpr std::uintptr_t kBhkNiTriStripsShapeVtable = 0x010C771C;
-	constexpr std::size_t kBhkNiTriStripsShapeSize = 0x14;
+	// Covers the classes FNV's static terrain is actually built from - bhkNiTriStripsShape,
+	// bhkPackedNiTriStripsShape and bhkMoppBvTreeShape - as well as the convex shapes used for
+	// characters and props. Sorted by vtable, which the runtime lookup relies on.
+	extern const HavokShapeClass kHavokShapeClasses[];
+	extern const std::size_t kHavokShapeClassCount;
+
+	// Narrowest address range containing every vtable above. The runtime scan range-checks against
+	// this before doing any table lookup, which is what keeps a full scan of the process heap to
+	// about a second.
+	constexpr std::uintptr_t kVtableLo = 0x01010000u;
+	constexpr std::uintptr_t kVtableHi = 0x010CA800u;
 }
 
 namespace vaultcraft::engine
 {
-	// Phase 1 spike, throwaway. Locates terrain collision shapes in the live process by searching
-	// committed private memory for the vtable above, then logs what the candidates hold. Answers the
-	// one question phase 1 exists to answer - can we get terrain triangles out of Havok - without
-	// committing to an architecture first.
+	// Phase 1 spike, throwaway. Walks committed memory looking for live Havok objects, identifies
+	// each by its vtable, and reports what it found. Answers the question phase 1 exists to ask -
+	// can we get at terrain geometry - without committing to an architecture first.
 	//
-	// Blocking and not cheap; call it once, on save load. Returns the number of candidates found.
-	int ScanForTerrainShapes();
+	// Blocking and not cheap. Call it a few times after a cell has finished loading, not on save
+	// load itself: terrain collision is built *during* cell load, so scanning at that instant finds
+	// nothing and looks identical to the class not being used.
+	//
+	// Returns the total number of objects found across all classes.
+	int ScanForHavokObjects();
 } // namespace vaultcraft::engine
