@@ -64,6 +64,18 @@ public static class Win {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+
+    public const uint WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101;
+
+    // PostMessage needs no foreground window and is not defeated by the game being busy or
+    // by the window having been switched away from between focus and send. It only works if the
+    // game reads Win32 key messages rather than polling DirectInput, which is why this is a
+    // second route rather than the only one.
+    public static void PostKey(IntPtr hwnd, int vk) {
+        PostMessage(hwnd, WM_KEYDOWN, (IntPtr)vk, (IntPtr)0x001E0001);
+        PostMessage(hwnd, WM_KEYUP, (IntPtr)vk, (IntPtr)0xC01E0001);
+    }
 
     // SetForegroundWindow only works from the thread that owns the current foreground
     // window. Attaching to that thread's input queue for the duration of the call is
@@ -141,9 +153,11 @@ if ($NoKeys) {
 
 # ESC skips the long loading sequence at the start of a session, which is worth a
 # press or three but not a flood: it is also the pause/menu key later on.
+# VK_ESCAPE = 0x1B, VK_UP = 0x26, VK_RETURN = 0x0D
 for ($i = 0; $i -lt $SkipPresses; $i++) {
     [void][Win]::ForceForeground($proc.MainWindowHandle)
     Start-Sleep -Milliseconds 400
+    [Win]::PostKey($proc.MainWindowHandle, 0x1B)
     [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
     Write-Host "  skip press $($i + 1)/$SkipPresses"
     Start-Sleep -Seconds 2
@@ -161,11 +175,15 @@ while ($true) {
     Start-Sleep -Milliseconds 600
 
     # Up, then Enter, pause, Enter: pick Continue on the main menu, then clear the
-    # prompt that appears once the world starts loading.
+    # prompt that appears once the world starts loading. Both routes are used every
+    # time: SendKeys for polled input, PostMessage for window-message input.
+    [Win]::PostKey($proc.MainWindowHandle, 0x26)
     [System.Windows.Forms.SendKeys]::SendWait('{UP}')
     Start-Sleep -Milliseconds 1200
+    [Win]::PostKey($proc.MainWindowHandle, 0x0D)
     [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
     Start-Sleep -Seconds 2
+    [Win]::PostKey($proc.MainWindowHandle, 0x0D)
     [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
 
     if ($NoVerify) { break }
