@@ -30,8 +30,22 @@ namespace vaultcraft
 		// Call from the game loop, so there is only ever one writer.
 		void WriteSkyState(const proto::SkyState& a_state);
 
+		// Reads what Minecraft's physics decided, for the frames since the last call. False when
+		// there is nothing new or no mapping, which is the normal idle case rather than a fault.
+		//
+		// The same seqlock in reverse: seq is sampled, the fields copied, seq sampled again, and
+		// the copy rejected unless both samples agree and were even. Minecraft writes this from its
+		// render thread while we read from the game loop, so a torn read is a real possibility and
+		// would show up as the player teleporting across the map.
+		[[nodiscard]] bool ReadMcState(proto::McState& a_out);
+
+		// True if Minecraft has ever written to the link. Stays true once it has, so a caller can
+		// tell "never connected" from "connected and then went away".
+		[[nodiscard]] bool McEverSeen() const;
+
 	private:
 		HANDLE        mapping_{ nullptr };
 		std::uint8_t* base_{ nullptr };
+		bool          mcEverSeen_{ false };
 	};
 } // namespace vaultcraft

@@ -14,6 +14,67 @@ namespace
 	// origin of a world.
 	bool g_inGame = false;
 
+	// The puppet's last accepted position, in FNV world units. Minecraft's physics is the authority
+	// from here on, so this is only used to notice that the player has not moved, and to avoid
+	// re-running a script call every single frame for nothing.
+	//
+	// Deduplication matters more than it looks: SetPosition recompiles a script expression every
+	// call, so doing it 60 times a second for a player standing still is pure cost. Only a real
+	// change is worth paying for.
+	double g_puppetX = 0.0;
+	double g_puppetY = 0.0;
+	double g_puppetZ = 0.0;
+	bool   g_puppetKnown = false;
+
+	// One FNV unit in Minecraft blocks. A nudge smaller than this is noise - MC interpolates
+	// between ticks, so it republishes the same position with sub-block wobble forever, and
+	// reacting to that would move the player every frame and fight the physics that produced it.
+	constexpr double kMinMoveUnits = 0.35;
+
+	// True once Minecraft has taken over movement, so it is only disabled on the way out and the
+	// player is not left frozen if Minecraft never connects.
+	bool g_movementFrozen = false;
+
+	// Moves the FNV player to wherever Minecraft's physics decided they should be, and stops the
+	// game's own controller from arguing about it.
+	//
+	// Both halves matter. Setting the position alone gets undone by FNV's movement code on the same
+	// frame, which reads its own animation and collision and pulls the player back. Freezing its
+	// controls alone leaves the player welded wherever they were standing. Together, Minecraft owns
+	// the position and FNV renders it.
+	void DrivePuppet(const vaultcraft::proto::McState& a_mc)
+	{
+		if (!(a_mc.flags & vaultcraft::proto::kMcInWorld)) {
+			return;  // a menu, a title screen, or a world that has not finished loading
+		}
+		if (!vaultcraft::script::Ready()) {
+			return;
+		}
+		if (!g_movementFrozen) {
+			vaultcraft::script::FreezeMovement(true);
+			g_movementFrozen = true;
+			vaultcraft::log::Info("puppet: FNV controls frozen, Minecraft owns movement");
+		}
+
+		double fx = 0.0, fy = 0.0, fz = 0.0;
+		vaultcraft::FromMinecraft(a_mc.x, a_mc.y, a_mc.z, fx, fy, fz);
+
+		if (g_puppetKnown) {
+			const double dx = fx - g_puppetX, dy = fy - g_puppetY, dz = fz - g_puppetZ;
+			if (dx * dx + dy * dy + dz * dz < kMinMoveUnits * kMinMoveUnits) {
+				return;  // standing still; do not pay for another script call
+			}
+		}
+		// Absolute, because Minecraft is authoritative: its position is where the player IS, not a
+		// delta to apply on top of wherever FNV currently thinks they are.
+		if (vaultcraft::script::SetPosition(fx, fy, fz)) {
+			g_puppetX = fx;
+			g_puppetY = fy;
+			g_puppetZ = fz;
+			g_puppetKnown = true;
+		}
+	}
+
 	// Publishes where the player is, in Minecraft's coordinates, once per frame.
 	//
 	// Phase 2 has Minecraft as the authority over movement, but the player starts out being driven
@@ -58,6 +119,13 @@ namespace
 		case NVSEMessagingInterface::kMessage_MainGameLoop:
 			vaultcraft::Link::Get().Heartbeat();
 			PublishState();
+			// Minecraft's physics wins, so read what it decided and follow. Read after publishing:
+			// the game is authoritative for where the player is until Minecraft takes over, and
+			// this frame's reading is what drives them next frame.
+			if (vaultcraft::proto::McState mc{};
+				vaultcraft::Link::Get().ReadMcState(mc)) {
+				DrivePuppet(mc);
+			}
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoad:
 			vaultcraft::log::Info("game loaded");
@@ -83,6 +151,10 @@ namespace
 		}
 		case NVSEMessagingInterface::kMessage_ExitGame:
 			vaultcraft::log::Info("leaving the game");
+			// Give the controls back before the save state can matter. Alt resets on load anyway,
+			// but leaving a mod holding movement disabled is the kind of thing that outlives the
+			// reason for it.
+			vaultcraft::script::FreezeMovement(false);
 			g_inGame = false;
 			break;
 		default:

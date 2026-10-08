@@ -28,6 +28,28 @@ namespace vaultcraft::script
 	// different from a height of zero, so it is reported rather than conflated.
 	bool TerrainHeight(const double a_x, const double a_y, double& a_outHeight);
 
+	// Moves the player to an absolute position. Base FNV GECK's SetPos sets ONE axis per call and
+	// takes the axis as a character, so this issues three of them inside a single compiled block.
+	//
+	// Deliberately not JIP's SetPosEx: that would take all three coordinates in one call, but it
+	// only exists because JIP-LN-NVSE is installed, and a puppet that cannot move without a
+	// third-party plugin is a worse dependency than three calls in one script.
+	//
+	// The block is recompiled per move, because the expression compiler requires the coordinates
+	// inline - supplying them at call time does not compile. That is fine at one move per frame; if
+	// it ever shows up in a profile, the fix is the engine's SetPos at a raw address, which xNVSE
+	// does not export (its headers declare GetPos but no setter).
+	bool SetPosition(double a_x, double a_y, double a_z);
+
+	// Stops FNV's own controller moving the player, so Minecraft's physics is the only thing
+	// deciding where they go. Without this the two fight, and the game wins by pulling the player
+	// back to wherever its own collision and animation expect.
+	//
+	// Alt rather than vanilla DisablePlayerControls because it is not savebaked and resets on
+	// load, so it cannot end up written into a save. Keyed on our mod name, so another mod
+	// disabling movement does not silently get re-enabled by us.
+	void FreezeMovement(bool a_freeze);
+
 	// Player facing, in degrees. Intentionally NOT compiled at Init: see PlayerAngle.
 	//
 	// `Player.GetAngle X` returns -89 (looking up) to +89 (looking down). `Player.GetAngle Z`

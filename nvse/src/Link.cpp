@@ -160,4 +160,36 @@ log::Info("shared memory %s (%llu MB, %s)", log::Narrow(proto::kMappingName).c_s
 		// Even again, released, so the fields above are visible before the reader can stop spinning.
 		seq.store(was + 2, std::memory_order_release);
 	}
+
+	bool Link::ReadMcState(proto::McState& a_out)
+	{
+		if (!base_) {
+			return false;
+		}
+		// 16 is generous: the writer updates this once per frame, so a retry almost always
+		// succeeds immediately, and giving up is better than stalling the game loop.
+		for (int attempt = 0; attempt < 16; ++attempt) {
+			const auto* src      = reinterpret_cast<const proto::McState*>(base_ + proto::kOffMcState);
+			const auto  before   = std::atomic_ref<const std::uint32_t>(src->seq).load(std::memory_order_acquire);
+			if (before & 1) {
+				continue;  // mid-write; the writer will settle it
+			}
+			std::memcpy(&a_out, src, sizeof(a_out));
+			const auto after = std::atomic_ref<const std::uint32_t>(src->seq).load(std::memory_order_acquire);
+			if (before == after && !(after & 1)) {
+				if (after != 0) {
+					// Remember that Minecraft exists at all, independently of its heartbeat, so a
+					// reader can distinguish "never ran" from "ran and stopped".
+					mcEverSeen_ = true;
+				}
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool Link::McEverSeen() const
+	{
+		return mcEverSeen_;
+	}
 } // namespace vaultcraft

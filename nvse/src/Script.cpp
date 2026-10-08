@@ -47,6 +47,9 @@ namespace
 	Script* g_angX = nullptr;
 	bool    g_angTried = false;
 
+	NVSETogglePlayerControlsInterface* g_controls = nullptr;
+	const char* const                  kModName   = "VaultCraft";
+
 	// Compiles one expression. CompileExpression is right for these one-liners; CompileScript wants
 	// a block ("Begin Function{ } ... end") and rejects them.
 	Script* CompileExpr(const std::string& a_text)
@@ -96,6 +99,29 @@ void Init(NVSEInterface* a_nvse)
 	// kMessage_PostLoadGame, so it compiled long after this point.
 	g_script = static_cast<NVSEScriptInterface*>(a_nvse->QueryInterface(kInterface_Script));
 	log::Info("script: NVSEScriptInterface %s", g_script ? "acquired" : "UNAVAILABLE");
+
+	// Safe to fetch an interface here even though nothing may be compiled yet - QueryInterface only
+	// hands back a pointer to code that already exists, it does not run any of it.
+	g_controls = static_cast<NVSETogglePlayerControlsInterface*>(a_nvse->QueryInterface(kInterface_PlayerControls));
+	log::Info("script: TogglePlayerControls %s", g_controls ? "acquired" : "UNAVAILABLE");
+}
+
+void FreezeMovement(const bool a_freeze)
+{
+	if (!g_controls) {
+		return;
+	}
+	// All of movement, looking, jumping and running. Minecraft owns all of it, and leaving any one
+	// of them enabled lets the game pull the player back toward its own idea of where they are.
+	// Alt because it is not savebaked and resets on load: vanilla DisablePlayerControls writes
+	// through, and a stuck flag in a saved game is a bad afternoon.
+	constexpr std::uint32_t kAll = 0x1 | 0x2 | 0x40 | 0x200 | 0x800;
+	if (a_freeze) {
+		g_controls->DisablePlayerControlsAlt(kAll, kModName);
+	}
+	else {
+		g_controls->EnablePlayerControlsAlt(kAll, kModName);
+	}
 }
 
 bool Ready()
@@ -155,6 +181,35 @@ bool PlayerAngle(float& a_outZAngle, float& a_outXAngle)
 	}
 	a_outZAngle = static_cast<float>(z);
 	a_outXAngle = static_cast<float>(x);
+	return true;
+}
+
+bool SetPosition(const double a_x, const double a_y, const double a_z)
+{
+	if (!g_script) {
+		return false;
+	}
+	// CompileScript, not CompileExpression, because this is three statements rather than one
+	// expression - and CompileScript is the one that wants a block. Three axis sets inside a single
+	// block cost one compile per move instead of three.
+	//
+	// Two decimal places is deliberate. FNV units are about 1.4 cm, so 0.01 of a unit is roughly a
+	// tenth of a millimetre - finer than the game's own float precision can hold meaningfully, and
+	// every extra character is more work for the expression compiler on every single move.
+	char buf[192];
+	std::snprintf(buf, sizeof(buf),
+		"Begin Function\n"
+		"Player.SetPos X %.2f\n"
+		"Player.SetPos Y %.2f\n"
+		"Player.SetPos Z %.2f\n"
+		"end",
+		a_x, a_y, a_z);
+	Script* s = g_script->CompileScript(buf);
+	if (!s) {
+		return false;
+	}
+	NVSEArrayVarInterface::Element r;
+	g_script->CallFunction(s, nullptr, nullptr, &r, 0);
 	return true;
 }
 
