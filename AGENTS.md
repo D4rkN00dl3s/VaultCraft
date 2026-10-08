@@ -235,8 +235,13 @@ identical to a mistake. Static RE had pointed at it; the measurement overruled t
 **Scanning technique:** Havok object identity *is* the vtable, so one pass over committed memory
 identifies every class at once. Skip `MEM_IMAGE` — the vtables themselves live there and would match
 everything — and range-check each dword against the vtable span before looking it up, which is what
-keeps a full pass over the heap to a few hundred ms. `Engine.cpp` is this probe, kept as a diagnostic
-rather than deleted.
+keeps a full pass over the heap to a few hundred ms. It found 4,450 objects across 11 classes in one
+loaded cell, reliably.
+
+That probe lived in `Engine.cpp` and **has been deleted** — the ground query it was built to find is
+answered by script, so nothing in the plugin needs Havok any more. The knowledge is kept here
+instead of in code, because the numbers in this section were expensive to obtain and are cheap to
+carry. Regenerate the vtable table from `ShapeVtables.java` if a future phase needs it.
 
 **35 class vtables recovered** from `FUN_00c68230`, which registers each class by pushing its name and
 its factory; the factory stores the vtable at offset 0 last, after the base-class vtable. The method
@@ -418,12 +423,18 @@ API in `nvse/extern/NVSE/nvse/nvse/Hooks_DirectInput8Create.h`, so input bridgin
 than the Skyrim version was.
 
 **There is no Address Library.** Fallout: New Vegas has no equivalent of Skyrim's relocation IDs,
-so every hook is a raw address found by hand against this specific build. Keep them in one table
-in `src/Engine.cpp`, not scattered, and expect them to break under engine-mutating mods.
+so every hook is a raw address found by hand against this specific build. Keep them in one table in
+`src/Engine.cpp`, not scattered, and expect them to break under engine-mutating mods.
 
-Engine access goes through `src/Port.h` and only through it. That boundary is what keeps the
-Minecraft half free of Fallout specifics and makes Skyrim recoverable later as a second
-implementation rather than a fork.
+`src/Engine.cpp` **does not exist yet** — phase 1 needed no raw address, because everything it
+wanted came through xNVSE's interfaces instead. Create it when a phase first needs one, and keep it
+to a single table of addresses plus the accessors built on them. `src/Script.cpp` is the equivalent
+boundary for everything reachable through the extenders, and is where position and ground height live
+today.
+
+Engine access goes through those and only through them. That boundary is what keeps the Minecraft
+half free of Fallout specifics and makes Skyrim recoverable later as a second implementation rather
+than a fork.
 
 ## Conventions
 

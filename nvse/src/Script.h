@@ -1,23 +1,33 @@
 #pragma once
 
-#include "PCH.h"
-
 // Access to the game's scripting engine through xNVSE's plugin interface.
 //
-// This exists because actor position is a Gamebryo scene-graph question, not a physics one, and
-// the scene graph is reachable through scripting without any reverse engineering at all. Phase 1
-// spent a long time looking for it inside Havok, which was the wrong place to look.
+// This is where the ground comes from. Phase 1 spent a long time trying to read terrain geometry
+// out of Havok and failed; the answer was a script call all along:
 //
-// NVSEScriptInterface compiles script and hands results back to C++. kInterface_Script is obtained
-// through the ordinary QueryInterface on NVSEInterface, so no symbols are linked - which matters,
-// because nvse_1_4.dll exports exactly one.
+//     Player.GetPos x                      -> -62767.99
+//     GetTerrainHeight -62767.99 -15891.25 ->   7004
+//
+// Nothing is linked to reach any of this - every interface comes from QueryInterface on
+// NVSEInterface, which matters because nvse_1_4.dll exports exactly one symbol, StartNVSE.
 namespace vaultcraft::script
 {
-	// Called from NVSEPlugin_Load, once the interface is available.
+	// The engine's "no terrain at these coordinates" answer. Not an error, and not a height.
+	inline constexpr double kNoTerrain = -2048.0;
+
+	// Called from NVSEPlugin_Load. Safe to call once.
 	void Init(NVSEInterface* a_nvse);
 
-	// One-shot probe, run a few seconds after a save loads. Compiles a handful of candidate
-	// expressions and logs what each returns, then walks whatever object comes back looking for
-	// pointers into known Havok classes.
-	void Probe();
+	// False if scripting is unavailable, in which case the calls below return false.
+	bool Ready();
+
+	// Player position in world units: X and Y are the horizontal plane, Z is up.
+	bool PlayerPosition(double& a_x, double& a_y, double& a_z);
+
+	// Ground height beneath the given X and Y. False when there is no terrain there - which is
+	// different from a height of zero, so it is reported rather than conflated.
+	bool TerrainHeight(const double a_x, const double a_y, double& a_outHeight);
+
+	// Logs position and a small ground sweep once, so a fresh build has something to show.
+	void SelfTest();
 } // namespace vaultcraft::script

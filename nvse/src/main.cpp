@@ -1,20 +1,10 @@
 #include "PCH.h"
-#include "Engine.h"
 #include "Link.h"
 #include "Log.h"
 #include "Script.h"
 
 static PluginHandle   g_pluginHandle = kPluginHandle_Invalid;
 static NVSEInterface* g_nvse = nullptr;
-
-// Phase 1 spike, throwaway: scan for Havok objects a few times after a cell has finished loading.
-//
-// The first attempt fired on kMessage_PostLoadGame and found one stray match, because terrain
-// collision is built *during* cell load - the scan ran in the same millisecond as the message and the
-// cell did not exist yet. The second attempt delayed it and found the difference. Several passes,
-// because a streamed cell keeps building for a while after the save is up.
-static int   g_scansLeft = 0;
-static DWORD g_nextScan = 0;
 
 namespace
 {
@@ -26,27 +16,15 @@ namespace
 		switch (a_msg->type) {
 		case NVSEMessagingInterface::kMessage_MainGameLoop:
 			vaultcraft::Link::Get().Heartbeat();
-			if (g_scansLeft > 0 && ::GetTickCount() >= g_nextScan) {
-				--g_scansLeft;
-				g_nextScan = ::GetTickCount() + 5000;
-				vaultcraft::log::Info("havok scan pass %d", 4 - g_scansLeft);
-				vaultcraft::engine::ScanForHavokObjects();
-				// The script probe matters more than the scan. Actor position is a scene-graph
-				// question and needs no physics at all; this runs on the first pass, by which point
-				// a cell has finished loading and the player exists.
-				if (4 - g_scansLeft == 1) {
-					vaultcraft::script::Probe();
-				}
-			}
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoad:
 			vaultcraft::log::Info("game loaded");
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoadGame:
 			vaultcraft::log::Info("save loaded");
-			// Deliberately not on this message: the cell is still being built here.
-			g_scansLeft = 4;
-			g_nextScan = ::GetTickCount() + 5000;
+			// Once a cell has finished loading, so the player exists and the ground is queryable.
+			// Terrain collision is built *during* cell load, so asking earlier returns nothing.
+			vaultcraft::script::SelfTest();
 			break;
 		case NVSEMessagingInterface::kMessage_ExitGame:
 			vaultcraft::log::Info("leaving the game");
