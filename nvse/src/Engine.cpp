@@ -43,6 +43,20 @@ namespace vaultcraft::addr
 		{ "bhkConvexSweepShape",        0x010CAAF4u },
 	};
 	const std::size_t kHavokShapeClassCount = sizeof(kHavokShapeClasses) / sizeof(kHavokShapeClasses[0]);
+
+	// Classes whose constructors are unreachable statically; we find their vtables through the
+	// runtime registry instead. Addresses are the strings in .rdata, from the Ghidra listing.
+	const NamedClass kNamedClasses[] = {
+		{ "bhkWorld",           0x010C4284u },
+		{ "hkpWorld",           0x010DB400u },
+		{ "hkpPhysicsSystem",   0x010D6120u },
+		{ "bhkShapeCollection", 0x010CB2E4u },
+		{ "bhkCharacterProxy",  0x010C8404u },
+		{ "bhkWorldObject",     0x010C4420u },
+		{ "bhkMoppBvTreeShape", 0x010C3F60u },
+		{ "bhkRigidBody",       0x010C3E0Cu },
+	};
+	const std::size_t kNamedClassCount = sizeof(kNamedClasses) / sizeof(kNamedClasses[0]);
 } // namespace vaultcraft::addr
 
 namespace vaultcraft::engine
@@ -180,6 +194,55 @@ namespace
 		"bhkMoppBvTreeShape",
 		"bhkNiTriStripsShape",
 	};
+	// Reports every live pointer to a class-name string as a possible registry entry, with the
+	// neighbouring dwords annotated. A registry entry pairs a name with a vtable, so if one of
+	// these hits, the vtable is in the surrounding words - and that is the only way to get a
+	// vtable for a class whose constructor no static route can reach.
+	int ReportRegistryEntry(const std::size_t a_index)
+	{
+		const std::uint32_t target = addr::kNamedClasses[a_index].strAddr;
+		int found = 0;
+		SYSTEM_INFO si{};
+		::GetSystemInfo(&si);
+		std::uintptr_t cursor = 0x00010000u;
+		const std::uintptr_t limit = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
+
+		while (cursor < limit && found < 4) {
+			MEMORY_BASIC_INFORMATION mbi{};
+			if (::VirtualQuery(reinterpret_cast<LPCVOID>(cursor), &mbi, sizeof(mbi)) == 0) {
+				break;
+			}
+			const std::uintptr_t start = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+			const std::uintptr_t end = start + mbi.RegionSize;
+			if (end <= cursor) {
+				break;
+			}
+			if (mbi.State == MEM_COMMIT && mbi.Type != MEM_IMAGE &&
+				(mbi.Protect & PAGE_GUARD) == 0 && (mbi.Protect & PAGE_NOACCESS) == 0 &&
+				mbi.RegionSize >= 0x40) {
+				const auto* w = reinterpret_cast<const std::uint32_t*>(start);
+				const std::size_t n = static_cast<std::size_t>(mbi.RegionSize) / sizeof(std::uint32_t);
+				for (std::size_t i = 0; i + 6 < n && found < 4; ++i) {
+					if (w[i] != target) {
+						continue;
+					}
+					++found;
+					log::Info("registry? %s name-ptr at %08X", addr::kNamedClasses[a_index].name,
+						static_cast<unsigned long>(start + i * 4));
+					// Six either side, so the pairing is visible whichever way round it is.
+					for (std::size_t k = (i >= 6 ? i - 6 : 0); k < i + 7 && k < n; ++k) {
+						const int cls = Lookup(w[k]);
+						log::Info("    %+02X = %08X%s", static_cast<int>((static_cast<long>(k) - static_cast<long>(i)) * 4),
+							w[k],
+							cls >= 0 ? ("   <- " + std::string(addr::kHavokShapeClasses[cls].name)).c_str() : "");
+					}
+				}
+			}
+			cursor = end;
+		}
+		return found;
+	}
+
 	// The classes worth dumping. A global dump budget is useless here: the scan walks memory in
 	// address order, so whichever class happens to sit lowest wins all of it and the terrain
 	// classes - the entire point of the spike - get nothing.
@@ -217,6 +280,7 @@ int ScanForHavokObjects()
 
 	int total = 0;
 	int populated = 0;
+	int registryHits = 0;
 
 	SYSTEM_INFO si{};
 	::GetSystemInfo(&si);
@@ -311,6 +375,13 @@ int ScanForHavokObjects()
 		}
 
 		cursor = regionEnd;
+	}
+
+	for (std::size_t i = 0; i < addr::kNamedClassCount; ++i) {
+		registryHits += ReportRegistryEntry(i);
+	}
+	if (registryHits > 0) {
+		log::Info("class registry: %d entr(ies) found", registryHits);
 	}
 
 	const ULONGLONG elapsed = ::GetTickCount64() - started;

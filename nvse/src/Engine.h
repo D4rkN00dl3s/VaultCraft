@@ -58,6 +58,20 @@ namespace vaultcraft::addr
 	// (multiple inheritance), keeps a refcounted source object at +0x84, and caches copies of that
 	// source's fields at +0x90..+0xA0 - which are where the vertex and index arrays sit.
 	constexpr std::uint32_t kTriStripsDataWrapperVtable = 0x010C755Cu;
+
+	// Addresses of Havok class-name *strings*, used to find the runtime class registry.
+	//
+	// These classes are not registered the way shapes are. bhkWorld, bhkCharacterProxy,
+	// hkpWorld and hkpPhysicsSystem are each referenced from exactly one place in .text - the
+	// push-name type-mismatch thunk around 0x00fb0000 - and nothing calls that thunk, so no
+	// static route reaches their constructors. They register at runtime instead.
+	//
+	// So look for the registry rather than the constructor: any live pointer to one of these
+	// strings is a class-registry entry, and the vtable sits beside it. That is how to obtain a
+	// vtable for a class that cannot be built statically.
+	struct NamedClass { const char* name; std::uint32_t strAddr; };
+	extern const NamedClass kNamedClasses[];
+	extern const std::size_t kNamedClassCount;
 }
 
 namespace vaultcraft::engine

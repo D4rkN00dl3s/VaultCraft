@@ -255,7 +255,94 @@ shapes, so this needs fixing before phase 2.
 Do **not** read those offsets on a `bhkMoppBvTreeShape` — different class, and doing so yields a
 float of 136164352.0, which is not a bound.
 
-### The dead end, and why it matters
+### Ground height and player position: solved by scripting, not Havok
+
+The finding that matters, and it is the opposite of what the section above leads to. **Terrain
+geometry does not have to come out of Havok.** xNVSE's plugin API exposes the game's scripting
+engine, and the ground query is a script call:
+
+```
+Player.GetPos x  ->  -62767.99
+Player.GetPos y  ->  -15891.25
+Player.GetPos z  ->  7007.99
+GetTerrainHeight -62767.99 -15891.25  ->  7004
+```
+
+Measured in a live cell. Player Z is 7007.99 and the ground beneath is 7004, so the player stands
+~4 units above it, which is what you would expect. Sweeping 64-unit steps in X moves the ground
+7004 → 7017.6 → 7029.8 → 7068.8, so this is genuine per-point terrain with real slopes — not a
+cell-level approximation. That is what Minecraft collision needs.
+
+`GetTerrainHeight` is a **JIP-LN-NVSE** command and wraps a plain engine call:
+
+```cpp
+g_TES->GetTerrainHeight(&posXY, &height);      // JIP: Cmd_GetTerrainHeight_Execute
+```
+
+So the engine function was always there and directly callable in spirit. It took the whole of phase
+1 to notice, because the entire spike was aimed at Havok — which is the one lesson worth keeping from
+this: **when a game is modded, check its extender APIs before reverse-engineering its engine.** FNV
+had xNVSE and JIP LN installed the whole time.
+
+`Player.GetPos` is a **base FNV GECK** command, not a JIP one — JIP and NVSE's command tables both
+lack it. Its argument is the destination script variable, and the evaluator yields the assigned
+value, which is why `Player.GetPos x` returns a number and the bare `Player.GetPos` fails to compile.
+`GetPosEx` writes into three variables instead and is less useful from C++, which cannot read script
+variables back.
+
+How to reach scripting from a plugin, all through `QueryInterface` on `NVSEInterface`, so nothing is
+linked (`nvse_1_4.dll` exports exactly one symbol, `StartNVSE`):
+
+- `kInterface_Script` → `NVSEScriptInterface`: `CompileExpression`, `CompileScript`,
+  `CallFunction`, and an `NVSEArrayVarInterface::Element` result.
+- `kInterface_ArrayVar` → `NVSEArrayVarInterface`: `GetArraySize`, `GetElement`.
+- `kInterface_PlayerControls` → `NVSETogglePlayerControlsInterface`:
+  `DisablePlayerControlsAlt(flags, modName)` — exactly what the phase 2 puppet needs, and
+  non-savebaked.
+
+Three traps in that layer:
+
+- **`CompileScript` wants a block** — `Begin Function{ } ... end`. `CompileExpression` takes
+  one-liners. Commands with arguments need them written inline (`GetTerrainHeight 1 2`); supplying
+  them at call time does not compile.
+- **`FormHeap_Free` must be defined by the plugin.** `Element`'s methods are inline and reference
+  it, so constructing one pulls the symbol in, and it is not exported. Define it at **global scope**
+  (`GameTypes.h:39`) or the definition will not satisfy the `extern`. NVSE's own build points it at
+  the game's `FormHeapFree`, `0x00401030` (`GameAPI.cpp:159`), which matches `FUN_00401030` in the
+  Ghidra project. `CopyCString` is referenced too, via `Element`'s copy constructor — avoid ever
+  copying an `Element` and it stays unreferenced.
+- **`GetGlobalRef` does not return the player.** It returns whatever a global *already stores*, and
+  a reference must have been written there first with `SetGlobalRef`. FNV's `Player` global holds a
+  number, so there is no reference in it to fetch. The player is reached with `Player.GetPos`.
+
+### The Havok dead end, for the record
+
+The scanning and object-model work was not wasted — it proved the runtime geometry was
+unreachable, and the technique is still the fastest way to inspect live physics. But every route to
+*vertices* failed:
+
+```
+bhkMoppBvTreeShape +0x08  ->  vtable 0x010CA330, a Gamebryo asset loader
+                              (the literal string "_FallOut_3\Platforms\" follows its vtable)
+                                +0x14 -> vtable 0x0102E368, a 0x30-byte POD container
+                                +0x18 -> the "packed geometry"
+```
+
+`0x0102E368` has three destructors and refcounting and nothing else. The bytes that read as a
+proprietary packed format are **unparsed `.msGame` source data** the loader retains after Havok has
+built its MOPP tree from them. Runtime triangles are inside a compressed MOPP BVH. Separately,
+`bhkNiTriStripsShape` is used **zero** times per cell — static RE had named it as the terrain class,
+and only measurement overturned that.
+
+So the direct path was abandoned in favour of the ray-cast fallback, and then the fallback turned
+out to be unnecessary because scripting answers the same question directly.
+
+**Two lessons.** *When a game is modded, check its extender APIs before reverse-engineering its
+engine* — we spent the phase looking in Havok for something scripting exposes directly. And *never
+generalise from one dumped array*: the "packed format, multi-day job" claim came from looking at the
+index stream and concluding the positions were packed too.
+
+### Assorted Havok reference
 
 Several runs went into decoding what turned out to be the **source asset file, not runtime vertices**:
 

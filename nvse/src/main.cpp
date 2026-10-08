@@ -2,6 +2,7 @@
 #include "Engine.h"
 #include "Link.h"
 #include "Log.h"
+#include "Script.h"
 
 static PluginHandle   g_pluginHandle = kPluginHandle_Invalid;
 static NVSEInterface* g_nvse = nullptr;
@@ -30,6 +31,12 @@ namespace
 				g_nextScan = ::GetTickCount() + 5000;
 				vaultcraft::log::Info("havok scan pass %d", 4 - g_scansLeft);
 				vaultcraft::engine::ScanForHavokObjects();
+				// The script probe matters more than the scan. Actor position is a scene-graph
+				// question and needs no physics at all; this runs on the first pass, by which point
+				// a cell has finished loading and the player exists.
+				if (4 - g_scansLeft == 1) {
+					vaultcraft::script::Probe();
+				}
 			}
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoad:
@@ -81,6 +88,9 @@ extern "C" __declspec(dllexport) bool NVSEPlugin_Load(NVSEInterface* a_nvse)
 		vaultcraft::log::Error("no messaging interface; VaultCraft cannot track the game loop");
 		return false;
 	}
+
+	// Actor access goes through xNVSE's scripting interface, not through the engine.
+	vaultcraft::script::Init(a_nvse);
 	// The sender must be "NVSE", not our own name. Dispatch_Message walks s_pluginListeners[sender],
 	// and every message NVSE raises is dispatched with sender == 0; LookupHandleFromName maps "NVSE"
 	// to handle 0, which is the only slot that ever gets walked. Registering under "VaultCraft"
