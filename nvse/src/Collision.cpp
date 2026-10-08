@@ -13,16 +13,28 @@ namespace
 	// How far the player may drift from the centre of the patch they were last sent before a new
 	// one is sampled. Half the patch, so patches overlap as the player walks and there is never a
 	// gap to fall through.
-	constexpr double kSampleRadius = 48.0;
-
-	// Grid spacing in Minecraft blocks. One sample every 4 blocks: fine enough that a slope reads
-	// as a slope, coarse enough that a patch is a manageable number of samples.
 	//
-	// This is the cost knob. Every sample is one GetTerrainHeight call, and that recompiles a
-	// script expression, so the count is what decides whether this runs at all. At 4 blocks a
-	// 96x96 patch is 25x25 = 625 samples. See the note in Script.h about replacing the script call
-	// with the engine's when this becomes too slow.
-	constexpr double kGridStep = 4.0;
+	// 24 rather than 48 because of what sampling now costs: at one block per sample the patch is
+	// (2 * 24 + 1)^2 = 2,401 GetTerrainHeight calls, each a script recompile. Larger is cheaper in
+	// resends and far more expensive each - and this is the number the engine call exists to fix.
+	constexpr double kSampleRadius = 24.0;
+
+	// Grid spacing in Minecraft blocks. One sample per block, which is what the consumer needs:
+	//
+	// Minecraft buckets triangles into 8x8x8 cells (SkyCollision.readTris keys them by one region
+	// from the box's min corner), so a cell of geometry has to be built from samples about a block
+	// apart. At 4 blocks a cell would get 2x2 samples and the ground would read as a staircase of
+	// flat plates. One block per sample means each cell is an honest 8x8 height field.
+	//
+	// This is what makes the direct engine call necessary rather than merely nicer. At one block
+	// a 96x96 patch is 97x97 = 9,409 samples, and every one is a script recompile - tens of
+	// thousands of instructions, once per resend. There is no step size that avoids this: coarser
+	// loses the geometry, finer costs the same per-sample compile. See Script.h's TerrainHeight.
+	constexpr double kGridStep = 1.0;
+
+	// Minecraft's region size. Must match SkyCollision.REGION_SIZE, because that is what the
+	// consumer buckets by.
+	constexpr double kRegionSize = 8.0;
 
 	// The last patch sent, so we only resend on real movement.
 	double g_sentX = 0.0;
@@ -96,73 +108,109 @@ void Tick()
 		return;
 	}
 
-	// Two triangles per grid cell, skipping any cell that touches a missing sample rather than
-	// inventing a corner. A NaN corner would put a vertex at an undefined height and the player
-	// would fall through the floor.
+	// One kColTris message per Minecraft region.
 	//
-	// Sent as kColTris: these are the smooth triangles Minecraft's own collider walks against,
-	// which is what gives slopes their continuous feel. kColRegion (the voxel shapes) is for solid
-	// geometry Minecraft should treat as blocks, and terrain is not that.
-	const std::uint32_t maxTris = static_cast<std::uint32_t>((side - 1) * (side - 1) * 2);
-	auto*               begin    = Link::Get().ColBegin(proto::kColTris,
-		sizeof(proto::ColRegion) + maxTris * sizeof(proto::ColTri));
-	if (!begin) {
-		return;
-	}
-	auto* payload = reinterpret_cast<std::uint8_t*>(begin + sizeof(proto::ColMsgHeader));
+	// This split is the whole point, and getting it wrong is why the first attempt did nothing.
+	// SkyCollision.readTris keys a message's triangles by ONE region, derived from the box's min
+	// corner:
+	//
+	//     regionKey(floorDiv(minX, 8), floorDiv(minY, 8), floorDiv(minZ, 8))
+	//
+	// So a single 96-block message put every triangle in one 8-block cell, while
+	// trianglesNear only ever looks in the cells a query box touches. The player's own cell was
+	// empty, so it fell through - with the ring fully consumed and no error logged anywhere, which
+	// is why this took a look at the consumer to find.
+	//
+	// Emitting one message per region matches what the consumer already expects.
+	//
+	// Sent as kColTris, not kColRegion: these are the smooth triangles Minecraft's own collider
+	// walks against, which is where a slope's continuous feel comes from. kColRegion is voxel
+	// shapes for solid geometry Minecraft treats as blocks, and terrain is not that.
+	const std::uint32_t maxTrisPerRegion = 128;
+	std::uint32_t       regionsSent = 0;
+	std::uint32_t       totalTris   = 0;
 
-	proto::ColRegion region{};
-	region.minX = static_cast<std::int32_t>(std::floor(blockX - kSampleRadius));
-	region.maxX = static_cast<std::int32_t>(std::ceil(blockX + kSampleRadius));
-	region.minZ = static_cast<std::int32_t>(std::floor(blockZ - kSampleRadius));
-	region.maxZ = static_cast<std::int32_t>(std::ceil(blockZ + kSampleRadius));
-	region.minY = -2048;
-	region.maxY = 2048;
-	region.epoch = g_epoch;
-	std::memcpy(payload, &region, sizeof(region));
-	auto* tris = reinterpret_cast<proto::ColTri*>(payload + sizeof(region));
+	const int rx0 = static_cast<int>(std::floor(blockX - kSampleRadius)) / 8;
+	const int rx1 = static_cast<int>(std::ceil(blockX + kSampleRadius)) / 8;
+	const int rz0 = static_cast<int>(std::floor(blockZ - kSampleRadius)) / 8;
+	const int rz1 = static_cast<int>(std::ceil(blockZ + kSampleRadius)) / 8;
 
-	std::uint32_t count = 0;
-	for (int gz = 0; gz < side - 1; ++gz) {
-		for (int gx = 0; gx < side - 1; ++gx) {
-			const std::size_t i00 = static_cast<std::size_t>(gz) * side + gx;
-			const std::size_t i10 = i00 + 1;
-			const std::size_t i01 = i00 + side;
-			const std::size_t i11 = i01 + 1;
-			if (std::isnan(heights[i00]) || std::isnan(heights[i10]) || std::isnan(heights[i01]) ||
-				std::isnan(heights[i11])) {
-				continue;
+	for (int rz = rz0; rz <= rz1; ++rz) {
+		for (int rx = rx0; rx <= rx1; ++rx) {
+			auto* begin = Link::Get().ColBegin(proto::kColTris,
+				sizeof(proto::ColRegion) + maxTrisPerRegion * sizeof(proto::ColTri));
+			if (!begin) {
+				break;  // ring full; the rest of this patch has nowhere to go
 			}
-			const float bx = static_cast<float>(blockX + (gx - half) * kGridStep);
-			const float bz = static_cast<float>(blockZ + (gz - half) * kGridStep);
-			const float ex = static_cast<float>(kGridStep);
+			auto* payload = reinterpret_cast<std::uint8_t*>(begin + sizeof(proto::ColMsgHeader));
 
-			// Winding is counter-clockwise seen from above, so the triangle's normal points up and
-			// the player stands on it rather than falling through.
-			const float v00[3] = { bx, heights[i00], bz };
-			const float v10[3] = { bx + ex, heights[i10], bz };
-			const float v01[3] = { bx, heights[i01], bz + ex };
-			const float v11[3] = { bx + ex, heights[i11], bz + ex };
+			proto::ColRegion region{};
+			region.minX  = rx * 8;
+			region.maxX  = region.minX + 8;
+			region.minZ  = rz * 8;
+			region.maxZ  = region.minZ + 8;
+			region.minY  = -2048;
+			region.maxY  = 2048;
+			region.epoch = g_epoch;
+			auto* tris = reinterpret_cast<proto::ColTri*>(payload + sizeof(region));
 
-			const float triA[9] = { v00[0], v00[1], v00[2], v10[0], v10[1], v10[2], v01[0], v01[1], v01[2] };
-			const float triB[9] = { v10[0], v10[1], v10[2], v11[0], v11[1], v11[2], v01[0], v01[1], v01[2] };
-			std::memcpy(&tris[count].v, triA, sizeof(triA));
-			tris[count].flags = proto::kTriTerrain;
-			++count;
-			std::memcpy(&tris[count].v, triB, sizeof(triB));
-			tris[count].flags = proto::kTriTerrain;
-			++count;
+			std::uint32_t count = 0;
+			// Each 8x8 region's worth of triangles: 7x7 quads of the grid, two triangles each.
+			for (int gz = rz * 8; gz < rz * 8 + 7; ++gz) {
+				for (int gx = rx * 8; gx < rx * 8 + 7; ++gx) {
+					// Grid indices for the four corners of this cell, from the patch's own frame.
+					const int lx = static_cast<int>(std::lround((gx - (blockX - half)) / kGridStep));
+					const int lz = static_cast<int>(std::lround((gz - (blockZ - half)) / kGridStep));
+					if (lx < 0 || lz < 0 || lx >= side - 1 || lz >= side - 1) {
+						continue;  // outside what we sampled
+					}
+					const std::size_t i00 = static_cast<std::size_t>(lz) * side + lx;
+					const std::size_t i10 = i00 + 1;
+					const std::size_t i01 = i00 + side;
+					const std::size_t i11 = i01 + 1;
+					// A cell touching a missing sample is skipped rather than sent with an undefined
+					// corner: a vertex at an undefined height is a hole the player falls through.
+					if (std::isnan(heights[i00]) || std::isnan(heights[i10]) ||
+						std::isnan(heights[i01]) || std::isnan(heights[i11])) {
+						continue;
+					}
+					if (count + 2 > maxTrisPerRegion) {
+						break;
+					}
+					const float bx = static_cast<float>(blockX + lx * kGridStep);
+					const float bz = static_cast<float>(blockZ + lz * kGridStep);
+					const float ex = static_cast<float>(kGridStep);
+
+					// Winding is counter-clockwise seen from above, so the normal points up and the
+					// player stands on it rather than falling through.
+					const float triA[9] = { bx, heights[i00], bz, bx + ex, heights[i10], bz,
+						bx, heights[i01], bz + ex };
+					const float triB[9] = { bx + ex, heights[i10], bz, bx + ex, heights[i11], bz + ex,
+						bx, heights[i01], bz + ex };
+					std::memcpy(&tris[count].v, triA, sizeof(triA));
+					tris[count].flags = proto::kTriTerrain;
+					++count;
+					std::memcpy(&tris[count].v, triB, sizeof(triB));
+					tris[count].flags = proto::kTriTerrain;
+					++count;
+				}
+			}
+
+			if (count == 0) {
+				continue;  // no triangles for this region; nothing to publish
+			}
+			region.count = count;
+			std::memcpy(payload, &region, sizeof(region));
+			Link::Get().ColCommit(begin, proto::kColTris);
+			++regionsSent;
+			totalTris += count;
 		}
 	}
 
-	if (count == 0) {
-		return;  // nothing committed, so nothing to publish
+	if (regionsSent == 0) {
+		return;
 	}
-	region.count = count;
-	std::memcpy(payload, &region, sizeof(region));
-
-	Link::Get().ColCommit(begin, proto::kColTris);
-	log::Info("collision: sent %u triangles over %dx%d samples around %.1f %.1f", count, side, side,
-		blockX, blockZ);
+	log::Info("collision: sent %u triangles across %u regions from %dx%d samples around %.1f %.1f",
+		totalTris, regionsSent, side, side, blockX, blockZ);
 }
 } // namespace vaultcraft::collision

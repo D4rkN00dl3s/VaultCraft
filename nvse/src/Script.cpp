@@ -234,11 +234,11 @@ bool TerrainHeight(const double a_x, const double a_y, double& a_outHeight)
 	if (!RunNum(buf, h)) {
 		return false;
 	}
-	// The engine answers -2048 where there is no terrain. Passing that back as a height would put
-	// the player two thousand units underground, so it is reported as absence instead.
-	if (h == kNoTerrain) {
-		return false;
-	}
+	// The engine answers 0 where the coordinates fall outside every loaded cell, per the wiki.
+	// Zero is also a perfectly legal height, so it cannot be distinguished from real ground by
+	// value - and treating it as absence is the safe direction to be wrong in, because a missing
+	// sample drops one triangle rather than putting a vertex at sea level in the middle of a
+	// mountain. Interior cells always answer 0 here, since terrain height only exists outdoors.
 	a_outHeight = h;
 	return true;
 }

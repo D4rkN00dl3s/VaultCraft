@@ -12,8 +12,9 @@
 // NVSEInterface, which matters because nvse_1_4.dll exports exactly one symbol, StartNVSE.
 namespace vaultcraft::script
 {
-	// The engine's "no terrain at these coordinates" answer. Not an error, and not a height.
-	inline constexpr double kNoTerrain = -2048.0;
+	// GetTerrainHeight's answer where there is no terrain. It is 0 - NOT -2048, which is what an early
+	// probe seemed to show and what this constant used to say. Zero is a legal height, so it cannot
+	// be told apart from real ground by value alone; see TerrainHeight's note on that.
 
 	// Called from NVSEPlugin_Load. Safe to call once.
 	void Init(NVSEInterface* a_nvse);

@@ -31,6 +31,16 @@ OFF_HEADER = 0x0
 HEADER_SIZE = 0x20
 OFF_SKY_STATE = 0x100
 SKY_STATE_SIZE = 0x40
+OFF_MC_STATE = 0x200
+# Only the head of McState is needed: seq, flags, position, angles. eyeHeight and the rest follow.
+MC_STATE_HEAD = "<IIdddff"
+MC_STATE_HEAD_SIZE = struct.calcsize(MC_STATE_HEAD)
+
+MC_IN_WORLD = 1 << 0
+MC_ON_GROUND = 1 << 2
+MC_SNEAKING = 1 << 3
+MC_SPRINTING = 1 << 4
+MC_FLYING = 1 << 7
 
 k32 = ctypes.windll.kernel32
 k32.GetTickCount64.restype = ctypes.c_uint64
@@ -109,6 +119,35 @@ def snapshot():
             print(f"viewport  {vw}x{vh}   game hour {hour:.2f}")
         except (OSError, struct.error) as e:
             print(f"state     unavailable ({e})")
+
+        # What Minecraft decided. This is the half that answers "is the puppet working": the game
+        # publishes where FNV's player is, but MC publishes where MC's physics put its player, and
+        # the plugin moves FNV's to match. If this stays at the origin, Minecraft has nothing to
+        # stand on and the loop has nothing to do.
+        try:
+            mseq, mflags, mx, my, mz, myaw, mpitch = struct.unpack(
+                MC_STATE_HEAD, read(view.value, OFF_MC_STATE, MC_STATE_HEAD_SIZE))
+            if mseq == 0:
+                print("mc        no state yet (Minecraft has not written)")
+            else:
+                flags = []
+                if mflags & MC_IN_WORLD:
+                    flags.append("inWorld")
+                if mflags & MC_ON_GROUND:
+                    flags.append("ON-GROUND")
+                if mflags & MC_SNEAKING:
+                    flags.append("sneaking")
+                if mflags & MC_SPRINTING:
+                    flags.append("sprinting")
+                if mflags & MC_FLYING:
+                    flags.append("flying")
+                print(f"mc        seq {mseq}{' (MID-WRITE)' if mseq & 1 else ''} "
+                      f"flags 0x{mflags:X} {' '.join(flags) or '-'}")
+                print(f"mc pos    {mx:.2f} {my:.2f} {mz:.2f}   yaw {myaw:.1f} pitch {mpitch:.1f}")
+                if not (mflags & MC_ON_GROUND):
+                    print("          note: not on the ground - MC has no floor here, so it will not move")
+        except (OSError, struct.error) as e:
+            print(f"mc        unavailable ({e})")
     finally:
         k32.UnmapViewOfFile(view)
         k32.CloseHandle(handle)
@@ -125,8 +164,9 @@ def watch():
     if not handle:
         print(f"no mapping named {NAME}; start the game first")
         return 1
-    print(f"{'time':>6}  {'beat':>7}  {'pos (MC blocks)':^30}  yaw  pitch  flags")
-    print("        the 'game' column is how long ago the plugin last ticked.")
+    print(f"{'time':>6}  {'beat':>7}   sky pos (FNV's view)   yaw pitch |   mc pos (MC's view)   ground")
+    print("        'beat' is how long ago the plugin ticked. sky is what FNV publishes; mc is what")
+    print("        Minecraft's physics decided, which is what FNV is then moved to match.")
     previous = None
     try:
         while True:
@@ -135,11 +175,15 @@ def watch():
                 "<IIIIQQ", read(view.value, OFF_HEADER, HEADER_SIZE))
             seq, flags, _, _, x, y, z, yaw, pitch, _, _, _, _ = struct.unpack(
                 "<IIIIdddffIIIf", read(view.value, OFF_SKY_STATE, SKY_STATE_SIZE))
+            mseq, mflags, mx, my, mz, myaw, _ = struct.unpack(
+                MC_STATE_HEAD, read(view.value, OFF_MC_STATE, MC_STATE_HEAD_SIZE))
             moved = previous is not None and (round(x, 3), round(y, 3), round(z, 3), round(yaw, 1)) != previous
             previous = (round(x, 3), round(y, 3), round(z, 3), round(yaw, 1))
+            ground = "yes" if mflags & MC_ON_GROUND else ("no" if mseq else "-")
+            mcpos = f"{mx:8.2f} {my:7.2f} {mz:8.2f}" if mseq else "     (none)"
             print(f"{time.strftime('%H:%M:%S')}  {age(game_beat, now):>7}  "
-                  f"{x:9.2f} {y:9.2f} {z:9.2f}  {yaw:4.0f} {pitch:5.0f}  "
-                  f"0x{flags:X}{'' if not moved else '   <-'}")
+                  f"{x:8.2f} {y:8.2f} {z:8.2f} {yaw:4.0f} {pitch:5.0f} | "
+                  f"{mcpos}  {ground}{'' if not moved else '  <-'}")
             time.sleep(1.0)
     except KeyboardInterrupt:
         print()
