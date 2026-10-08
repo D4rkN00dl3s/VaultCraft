@@ -295,6 +295,23 @@ value, which is why `Player.GetPos x` returns a number and the bare `Player.GetP
 `GetPosEx` writes into three variables instead and is less useful from C++, which cannot read script
 variables back.
 
+**Ask before assuming a command's shape.** `geckfunctions.txt` in the repo root is the alphabetical
+list of all 3,469 GECK commands, kept local because geckwiki.com is Cloudflare-blocked to fetches. It
+is a **name list only** — it answers "does this command exist", never "what are its arguments or what
+does it return". So it is a spelling check, and guessing from it is how `Player.GetAngle z` happened:
+`GetAngle` is listed, the lowercase destination-variable form was invented, and it took three crashed
+builds to find. For anything whose argument shape or return value is not already measured here,
+**ask and paste the wiki entry** rather than reasoning it out.
+
+Verified present in the list, and used by the plugin: `GetPos`, `SetPos`, `GetAngle`, `SetAngle`,
+`GetTerrainHeight`, `SetPosEx`, `DisablePlayerControls`.
+
+`SetPos` is base FNV GECK, not JIP, and it sets **one axis per call** — `Player.SetPos X 566.34` — so
+moving the player is three writes inside one compiled block. It resolves the `Player` reference itself,
+so no actor lookup or form downcast is needed. JIP's `SetPosEx` would take all three coordinates at
+once, but it only exists because JIP is installed, and a puppet that cannot move without a
+third-party plugin is a worse dependency than three calls in one script.
+
 How to reach scripting from a plugin, all through `QueryInterface` on `NVSEInterface`, so nothing is
 linked (`nvse_1_4.dll` exports exactly one symbol, `StartNVSE`):
 
