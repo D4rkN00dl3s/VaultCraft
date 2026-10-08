@@ -29,3 +29,5 @@ FalloutNV.exe
 FalloutNV_backup.exe
 *.esm
 *.bsa
+# Third-party source consulted during RE, like rea/. Not part of the build.
+JIP-LN-NVSE/
