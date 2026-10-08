@@ -128,4 +128,36 @@ log::Info("shared memory %s (%llu MB, %s)", log::Narrow(proto::kMappingName).c_s
 		auto& header = *reinterpret_cast<proto::Header*>(base_ + proto::kOffHeader);
 		std::atomic_ref<std::uint64_t>(header.skyrimHeartbeatMs).store(::GetTickCount64(), std::memory_order_release);
 	}
+
+	void Link::WriteSkyState(const proto::SkyState& a_state)
+	{
+		if (!base_) {
+			return;
+		}
+		auto*       dst  = reinterpret_cast<proto::SkyState*>(base_ + proto::kOffSkyState);
+		std::atomic_ref<std::uint32_t> seq(dst->seq);
+
+		// Odd means "a write is in flight". The release fences matter: the reader is in another
+		// process, so the odd seq and the fields after it must not be reordered against each other,
+		// or Minecraft can read a half-updated position and see it as a settled one.
+		const std::uint32_t was = seq.load(std::memory_order_relaxed);
+		seq.store(was + 1, std::memory_order_release);
+		std::atomic_thread_fence(std::memory_order_release);
+
+		dst->flags          = a_state.flags;
+		dst->worldId        = a_state.worldId;
+		dst->collisionEpoch = a_state.collisionEpoch;
+		dst->posX           = a_state.posX;
+		dst->posY           = a_state.posY;
+		dst->posZ           = a_state.posZ;
+		dst->yaw            = a_state.yaw;
+		dst->pitch          = a_state.pitch;
+		dst->teleportSeq    = a_state.teleportSeq;
+		dst->viewportW      = a_state.viewportW;
+		dst->viewportH      = a_state.viewportH;
+		dst->gameHour       = a_state.gameHour;
+
+		// Even again, released, so the fields above are visible before the reader can stop spinning.
+		seq.store(was + 2, std::memory_order_release);
+	}
 } // namespace vaultcraft

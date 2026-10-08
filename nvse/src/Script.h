@@ -28,6 +28,18 @@ namespace vaultcraft::script
 	// different from a height of zero, so it is reported rather than conflated.
 	bool TerrainHeight(const double a_x, const double a_y, double& a_outHeight);
 
+	// Player facing, in degrees. Intentionally NOT compiled at Init: see PlayerAngle.
+	//
+	// `Player.GetAngle X` returns -89 (looking up) to +89 (looking down). `Player.GetAngle Z`
+	// returns 0..360 as a bearing: 0 at north, increasing clockwise, so 90 is east. Minecraft's yaw
+	// is 0 at south increasing clockwise, hence the 180 degree offset in World.h; its pitch is
+	// positive looking down, same as the X angle, so pitch passes through unchanged.
+	//
+	// Z is a bearing from the game's coordinate system, not from a compass rose: it is only
+	// meaningful in the Wasteland exterior worldspace, and the NorthMarker a compass uses is
+	// per-cell.
+	bool PlayerAngle(float& a_outZAngle, float& a_outXAngle);
+
 	// Logs position and a small ground sweep once, so a fresh build has something to show.
 	void SelfTest();
 } // namespace vaultcraft::script

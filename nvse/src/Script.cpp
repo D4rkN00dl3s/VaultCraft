@@ -33,6 +33,19 @@ namespace
 	Script* g_posX = nullptr;
 	Script* g_posY = nullptr;
 	Script* g_posZ = nullptr;
+	bool    g_posTried = false;
+
+	// Player.GetAngle takes an axis *character* (X or Z, uppercase) and returns a value - unlike
+	// Player.GetPos, whose argument is a destination variable. Reading them as
+	// "Player.GetAngle z" with a lowercase variable made the compiler fault, which took the game
+	// down inside NVSEPlugin_Load before it finished.
+	//
+	// Compiled on first use rather than at Init, so a scripting fault here can never happen on the
+	// load path again. g_angTried stops it retrying every frame if the commands turn out to be
+	// unavailable; per-frame recompilation is worse than a permanently absent angle.
+	Script* g_angZ = nullptr;
+	Script* g_angX = nullptr;
+	bool    g_angTried = false;
 
 	// Compiles one expression. CompileExpression is right for these one-liners; CompileScript wants
 	// a block ("Begin Function{ } ... end") and rejects them.
@@ -75,20 +88,37 @@ namespace
 
 void Init(NVSEInterface* a_nvse)
 {
+	// Acquire the interface and nothing else. NVSEPlugin_Load runs before the game has built its
+	// script compiler, and calling CompileExpression at this point faults - which xNVSE reports as
+	// "fatal error occurred at <nonsense address> while loading plugin", with no usable address and
+	// no clue which call did it. Compilation therefore happens on first use, at least one save load
+	// later. Phase 1 had this right for the wrong reason: its probe ran from
+	// kMessage_PostLoadGame, so it compiled long after this point.
 	g_script = static_cast<NVSEScriptInterface*>(a_nvse->QueryInterface(kInterface_Script));
-	if (!g_script) {
+	log::Info("script: NVSEScriptInterface %s", g_script ? "acquired" : "UNAVAILABLE");
+}
+
+bool Ready()
+{
+	return g_script != nullptr;
+}
+
+// Compiles the cached position expressions on first use. g_posTried stops a failure from retrying
+// every frame, which would be both wasteful and loud.
+static void CompilePositionScripts()
+{
+	if (g_posTried || !g_script) {
 		return;
 	}
+	g_posTried = true;
 	// Player.GetPos <var> yields the assigned value, so the argument is the destination script
 	// variable and the result comes back through the evaluator. The bare form does not compile.
 	g_posX = CompileExpr("Player.GetPos x");
 	g_posY = CompileExpr("Player.GetPos y");
 	g_posZ = CompileExpr("Player.GetPos z");
-}
-
-bool Ready()
-{
-	return g_script != nullptr && g_posX != nullptr;
+	if (!g_posX || !g_posY || !g_posZ) {
+		log::Error("script: Player.GetPos did not compile; position will read as unavailable");
+	}
 }
 
 bool PlayerPosition(double& a_x, double& a_y, double& a_z)
@@ -96,7 +126,36 @@ bool PlayerPosition(double& a_x, double& a_y, double& a_z)
 	if (!Ready()) {
 		return false;
 	}
+	CompilePositionScripts();
+	if (!g_posX || !g_posY || !g_posZ) {
+		return false;
+	}
 	return RunCached(g_posX, a_x) && RunCached(g_posY, a_y) && RunCached(g_posZ, a_z);
+}
+
+bool PlayerAngle(float& a_outZAngle, float& a_outXAngle)
+{
+	if (!g_script) {
+		return false;
+	}
+	if (!g_angTried) {
+		g_angTried = true;
+		g_angZ = CompileExpr("Player.GetAngle Z");
+		g_angX = CompileExpr("Player.GetAngle X");
+		if (!g_angZ || !g_angX) {
+			log::Error("script: Player.GetAngle did not compile; facing will read as zero");
+		}
+	}
+	if (!g_angZ || !g_angX) {
+		return false;
+	}
+	double z = 0.0, x = 0.0;
+	if (!RunCached(g_angZ, z) || !RunCached(g_angX, x)) {
+		return false;
+	}
+	a_outZAngle = static_cast<float>(z);
+	a_outXAngle = static_cast<float>(x);
+	return true;
 }
 
 bool TerrainHeight(const double a_x, const double a_y, double& a_outHeight)

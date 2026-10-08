@@ -2,12 +2,53 @@
 #include "Link.h"
 #include "Log.h"
 #include "Script.h"
+#include "World.h"
 
 static PluginHandle   g_pluginHandle = kPluginHandle_Invalid;
 static NVSEInterface* g_nvse = nullptr;
 
 namespace
 {
+	// True from the moment a save is loaded. Everything published to Minecraft is gated on it, so a
+	// player who is still at the main menu does not look to Minecraft like they are standing at the
+	// origin of a world.
+	bool g_inGame = false;
+
+	// Publishes where the player is, in Minecraft's coordinates, once per frame.
+	//
+	// Phase 2 has Minecraft as the authority over movement, but the player starts out being driven
+	// by the game, so the game has to publish where that leaves them. That is also the calibration
+	// step: both halves can then be compared against each other, which is how the one unmeasured
+	// constant in World.h - the sign of the north axis - gets settled.
+	void PublishState()
+	{
+		if (!g_inGame || !vaultcraft::script::Ready()) {
+			return;
+		}
+		double x = 0.0, y = 0.0, z = 0.0;
+		if (!vaultcraft::script::PlayerPosition(x, y, z)) {
+			return;
+		}
+		double mcX = 0.0, mcY = 0.0, mcZ = 0.0;
+		vaultcraft::ToMinecraft(x, y, z, mcX, mcY, mcZ);
+
+		vaultcraft::proto::SkyState state{};
+		state.flags   = vaultcraft::proto::kSkyInGame;
+		state.worldId = vaultcraft::g_worldId;
+		state.posX    = mcX;
+		state.posY    = mcY;
+		state.posZ    = mcZ;
+
+		// FNV's Z bearing is 0 at north and runs clockwise; Minecraft's yaw is 0 at south and runs
+		// clockwise. The offset between them is 180 degrees. X is positive looking down in both.
+		float zAngle = 0.0f, xAngle = 0.0f;
+		if (vaultcraft::script::PlayerAngle(zAngle, xAngle)) {
+			state.yaw   = vaultcraft::ToMinecraftYaw(zAngle);
+			state.pitch = xAngle;
+		}
+		vaultcraft::Link::Get().WriteSkyState(state);
+	}
+
 	// The game's main loop is where the heartbeat goes. A dedicated thread would be easier to
 	// reason about in isolation, but this is already once per frame and already the pace Minecraft
 	// synchronises to, so a second thread would buy nothing here.
@@ -16,18 +57,33 @@ namespace
 		switch (a_msg->type) {
 		case NVSEMessagingInterface::kMessage_MainGameLoop:
 			vaultcraft::Link::Get().Heartbeat();
+			PublishState();
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoad:
 			vaultcraft::log::Info("game loaded");
 			break;
-		case NVSEMessagingInterface::kMessage_PostLoadGame:
+		case NVSEMessagingInterface::kMessage_PostLoadGame: {
 			vaultcraft::log::Info("save loaded");
 			// Once a cell has finished loading, so the player exists and the ground is queryable.
 			// Terrain collision is built *during* cell load, so asking earlier returns nothing.
 			vaultcraft::script::SelfTest();
+			double ox = 0.0, oy = 0.0, oz = 0.0;
+			if (vaultcraft::script::PlayerPosition(ox, oy, oz)) {
+				// Anchor the mapping where the player loaded, so the Minecraft mirror world begins
+				// at (0, 0) whatever the save's own coordinates happen to be - they run to about
+				// +/-60,000 and differ per save, so there is nothing to hardcode.
+				vaultcraft::SetOrigin(ox, oy, oz);
+				g_inGame = true;
+				vaultcraft::log::Info("origin %.2f %.2f %.2f -> MC world %u", ox, oy, oz, vaultcraft::g_worldId);
+			}
+			else {
+				vaultcraft::log::Error("no player position at save load; the origin is not set");
+			}
 			break;
+		}
 		case NVSEMessagingInterface::kMessage_ExitGame:
 			vaultcraft::log::Info("leaving the game");
+			g_inGame = false;
 			break;
 		default:
 			break;

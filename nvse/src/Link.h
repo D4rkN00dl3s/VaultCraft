@@ -23,6 +23,13 @@ namespace vaultcraft
 		[[nodiscard]] std::uint32_t McPid() const;
 		void                      Heartbeat();
 
+		// Publishes the game side of the protocol. a_state is copied in as given except for seq,
+		// which this maintains: it is made odd while the copy is in flight and even once settled,
+		// which is how Minecraft's reader knows the fields it read belong to one write
+		// (SkyLink.readSkyState spins while seq is odd, and re-reads if it changed under it).
+		// Call from the game loop, so there is only ever one writer.
+		void WriteSkyState(const proto::SkyState& a_state);
+
 	private:
 		HANDLE        mapping_{ nullptr };
 		std::uint8_t* base_{ nullptr };
