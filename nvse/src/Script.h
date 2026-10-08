@@ -21,6 +21,11 @@ namespace vaultcraft::script
 	// False if scripting is unavailable, in which case the calls below return false.
 	bool Ready();
 
+	// True once a player position has actually been read. Distinct from Ready(), which only means
+	// the interface exists: asking for terrain before there is a player produces a patch centred
+	// on the origin, which is a real place in FNV's coordinate space and nowhere near the player.
+	bool PositionKnown();
+
 	// Player position in world units: X and Y are the horizontal plane, Z is up.
 	bool PlayerPosition(double& a_x, double& a_y, double& a_z);
 

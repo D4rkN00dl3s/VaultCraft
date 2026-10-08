@@ -43,9 +43,27 @@ namespace vaultcraft
 		// tell "never connected" from "connected and then went away".
 		[[nodiscard]] bool McEverSeen() const;
 
+		// Collision ring: the world's ground as Minecraft sees it. A ring rather than a plain
+		// array because the two halves never stop - Minecraft drains it on its own thread while
+		// this writes from the game loop, and neither may block waiting for the other.
+		//
+		// ColBegin reserves space and returns where to write the payload, or nullptr if the ring
+		// has no room (the consumer has stopped draining). ColCommit publishes it. Doing it in two
+		// steps means a message is either wholly visible or not written at all, which a
+		// write-head-first scheme would not guarantee.
+		std::uint8_t* ColBegin(std::uint32_t a_type, std::uint32_t a_payloadBytes);
+		void          ColCommit(std::uint8_t* a_begin, std::uint32_t a_type);
+		// Tells Minecraft to drop everything it has, because the world changed.
+		void          ColClear(std::uint32_t a_epoch);
+
 	private:
 		HANDLE        mapping_{ nullptr };
 		std::uint8_t* base_{ nullptr };
 		bool          mcEverSeen_{ false };
+		std::uint64_t colHead_{ 0 };      // total bytes we have ever published
+		std::uint64_t colPending_{ 0 };    // size of a reserved-but-uncommitted message, 0 if none
+		std::uint32_t colPendingType_{ 0 };
+		std::uint64_t colMaxMessage_{ 0 }; // largest message seen, kept for the slack reserve
+		bool          colFullLogged_{ false };
 	};
 } // namespace vaultcraft

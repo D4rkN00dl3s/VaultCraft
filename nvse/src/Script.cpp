@@ -34,6 +34,7 @@ namespace
 	Script* g_posY = nullptr;
 	Script* g_posZ = nullptr;
 	bool    g_posTried = false;
+	bool    positionKnown_ = false;
 
 	// Player.GetAngle takes an axis *character* (X or Z, uppercase) and returns a value - unlike
 	// Player.GetPos, whose argument is a destination variable. Reading them as
@@ -156,7 +157,16 @@ bool PlayerPosition(double& a_x, double& a_y, double& a_z)
 	if (!g_posX || !g_posY || !g_posZ) {
 		return false;
 	}
-	return RunCached(g_posX, a_x) && RunCached(g_posY, a_y) && RunCached(g_posZ, a_z);
+	if (!(RunCached(g_posX, a_x) && RunCached(g_posY, a_y) && RunCached(g_posZ, a_z))) {
+		return false;
+	}
+	positionKnown_ = true;
+	return true;
+}
+
+bool PositionKnown()
+{
+	return positionKnown_;
 }
 
 bool PlayerAngle(float& a_outZAngle, float& a_outXAngle)

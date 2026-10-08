@@ -1,4 +1,5 @@
 #include "PCH.h"
+#include "Collision.h"
 #include "Link.h"
 #include "Log.h"
 #include "Script.h"
@@ -126,6 +127,10 @@ namespace
 				vaultcraft::Link::Get().ReadMcState(mc)) {
 				DrivePuppet(mc);
 			}
+			// Ground for Minecraft to stand on. Not gated on McState: it costs nothing when the
+			// ring already holds this patch, and having terrain ready before Minecraft asks is
+			// what stops the player dropping through the world on the first frame.
+			vaultcraft::collision::Tick();
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoad:
 			vaultcraft::log::Info("game loaded");
